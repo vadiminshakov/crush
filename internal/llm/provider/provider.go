@@ -1,5 +1,7 @@
 package provider
 
+//go:generate mockery --name=Provider --with-expecter --structname=MockProvider --output=../../../mocks --filename=provider.go --srcpkg=github.com/charmbracelet/crush/internal/llm/provider
+
 import (
 	"context"
 	"fmt"

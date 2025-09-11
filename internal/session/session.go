@@ -1,5 +1,7 @@
 package session
 
+//go:generate mockery --name=Service --with-expecter --structname=MockSessionService --output=../../mocks --filename=session.go --srcpkg=github.com/charmbracelet/crush/internal/session
+
 import (
 	"context"
 	"database/sql"

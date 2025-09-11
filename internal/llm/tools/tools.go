@@ -1,5 +1,7 @@
 package tools
 
+//go:generate mockery --name=BaseTool --with-expecter --structname=MockBaseTool --output=../../../mocks --filename=tools.go --srcpkg=github.com/charmbracelet/crush/internal/llm/tools
+
 import (
 	"context"
 	"encoding/json"

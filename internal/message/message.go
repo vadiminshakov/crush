@@ -1,5 +1,7 @@
 package message
 
+//go:generate mockery --name=Service --with-expecter --structname=MockMessageService --output=../../mocks --filename=message.go --srcpkg=github.com/charmbracelet/crush/internal/message
+
 import (
 	"context"
 	"database/sql"
