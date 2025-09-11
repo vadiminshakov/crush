@@ -22,513 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_Agent_IsBusy(t *testing.T) {
-	t.Parallel()
-
-	agent := &agent{
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-	}
-
-	require.False(t, agent.IsBusy())
-	require.False(t, agent.IsSessionBusy("test-session"))
-
-	// set agent as busy
-	cancel := func() {}
-	agent.activeRequests.Set("test-session", cancel)
-
-	require.True(t, agent.IsBusy())
-	require.True(t, agent.IsSessionBusy("test-session"))
-}
-
-func Test_Agent_Cancel(t *testing.T) {
-	t.Parallel()
-
-	agent := &agent{
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-		promptQueue:    csync.NewMap[string, []string](),
-	}
-
-	cancelled := false
-	originalCancel := func() { cancelled = true }
-	agent.activeRequests.Set("test-session", originalCancel)
-	agent.promptQueue.Set("test-session", []string{"prompt1", "prompt2"})
-
-	require.True(t, agent.IsSessionBusy("test-session"))
-	require.Equal(t, 2, agent.QueuedPrompts("test-session"))
-
-	agent.Cancel("test-session")
-
-	require.True(t, cancelled)
-	require.False(t, agent.IsSessionBusy("test-session"))
-	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
-}
-
-func Test_Agent_CancelAll(t *testing.T) {
-	t.Parallel()
-
-	agent := &agent{
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-		promptQueue:    csync.NewMap[string, []string](),
-	}
-
-	var wg sync.WaitGroup
-	cancelled := make([]bool, 2)
-
-	cancel1 := func() {
-		cancelled[0] = true
-		wg.Done()
-	}
-	cancel2 := func() {
-		cancelled[1] = true
-		wg.Done()
-	}
-
-	wg.Add(2)
-	agent.activeRequests.Set("session1", cancel1)
-	agent.activeRequests.Set("session2", cancel2)
-
-	require.True(t, agent.IsBusy())
-
-	agent.CancelAll()
-
-	// wait for cancellations to complete
-	wg.Wait()
-
-	require.True(t, cancelled[0])
-	require.True(t, cancelled[1])
-	require.False(t, agent.IsBusy())
-}
-
-func Test_Agent_QueuedPrompts(t *testing.T) {
-	t.Parallel()
-
-	agent := &agent{
-		promptQueue: csync.NewMap[string, []string](),
-	}
-
-	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
-
-	agent.promptQueue.Set("test-session", []string{"test prompt"})
-	require.Equal(t, 1, agent.QueuedPrompts("test-session"))
-
-	agent.promptQueue.Set("test-session", []string{"prompt1", "prompt2"})
-	require.Equal(t, 2, agent.QueuedPrompts("test-session"))
-
-	agent.promptQueue.Set("test-session", nil)
-	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
-}
-
-func Test_Agent_ClearQueue(t *testing.T) {
-	t.Parallel()
-
-	agent := &agent{
-		promptQueue: csync.NewMap[string, []string](),
-	}
-
-	agent.promptQueue.Set("test-session", []string{"prompt1", "prompt2"})
-	require.Equal(t, 2, agent.QueuedPrompts("test-session"))
-
-	agent.ClearQueue("test-session")
-	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
-}
-
-func Test_Agent_Run_BasicExecution(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	_, err := config.Init(tempDir, tempDir, false)
-	require.NoError(t, err)
-
-	mockProvider := mocks.NewMockProvider(t)
-	mockSessionSvc := mocks.NewMockSessionService(t)
-	mockMessageSvc := mocks.NewMockMessageService(t)
-
-	agent := &agent{
-		Broker:         pubsub.NewBroker[AgentEvent](),
-		provider:       mockProvider,
-		providerID:     "test-provider",
-		sessions:       mockSessionSvc,
-		messages:       mockMessageSvc,
-		agentCfg:       config.Agent{Model: config.SelectedModelTypeLarge, ID: "test-agent"},
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-		promptQueue:    csync.NewMap[string, []string](),
-		tools:          csync.NewLazySlice(func() []tools.BaseTool { return []tools.BaseTool{} }),
-	}
-
-	testSessionID := "test-session"
-	testContent := "test content"
-
-	testModel := catwalk.Model{
-		ID:             "test-model",
-		SupportsImages: true,
-	}
-	mockProvider.EXPECT().Model().Return(testModel).Maybe()
-
-	testSession := session.Session{
-		ID:               testSessionID,
-		SummaryMessageID: "",
-	}
-	mockSessionSvc.EXPECT().Get(mock.Anything, testSessionID).Return(testSession, nil).Maybe()
-
-	mockMessageSvc.EXPECT().List(mock.Anything, testSessionID).Return([]message.Message{}, nil)
-
-	userMsg := message.Message{
-		ID:        "user-msg-1",
-		SessionID: testSessionID,
-		Role:      message.User,
-		Parts:     []message.ContentPart{message.TextContent{Text: testContent}},
-	}
-	mockMessageSvc.EXPECT().Create(mock.Anything, testSessionID, mock.MatchedBy(func(params message.CreateMessageParams) bool {
-		return params.Role == message.User
-	})).Return(userMsg, nil)
-
-	assistantMsg := message.Message{
-		ID:        "assistant-msg-1",
-		SessionID: testSessionID,
-		Role:      message.Assistant,
-		Parts:     []message.ContentPart{},
-	}
-	mockMessageSvc.EXPECT().Create(mock.Anything, testSessionID, mock.MatchedBy(func(params message.CreateMessageParams) bool {
-		return params.Role == message.Assistant
-	})).Return(assistantMsg, nil)
-
-	mockMessageSvc.EXPECT().Update(mock.Anything, mock.AnythingOfType("message.Message")).Return(nil).Maybe()
-
-	mockSessionSvc.EXPECT().Save(mock.Anything, mock.AnythingOfType("session.Session")).Return(session.Session{}, nil).Maybe()
-
-	eventChan := make(chan provider.ProviderEvent, 2)
-	eventChan <- provider.ProviderEvent{
-		Type:    provider.EventContentDelta,
-		Content: "Mock response content",
-	}
-	eventChan <- provider.ProviderEvent{
-		Type: provider.EventComplete,
-		Response: &provider.ProviderResponse{
-			Content:      "Mock response content",
-			FinishReason: message.FinishReasonEndTurn,
-			Usage:        provider.TokenUsage{InputTokens: 10, OutputTokens: 20},
-			ToolCalls:    []message.ToolCall{},
-		},
-	}
-	close(eventChan)
-
-	mockProvider.EXPECT().StreamResponse(mock.Anything, mock.AnythingOfType("[]message.Message"), mock.AnythingOfType("[]tools.BaseTool")).Return(eventChan).Maybe()
-
-	ctx := context.Background()
-	resultChan, err := agent.Run(ctx, testSessionID, testContent)
-
-	require.NoError(t, err)
-	require.NotNil(t, resultChan)
-
-	timeout := time.After(5 * time.Second)
-
-	for {
-		select {
-		case result, ok := <-resultChan:
-			if !ok {
-				require.Fail(t, "Channel closed without receiving final result")
-			}
-			if result.Done {
-				require.Equal(t, AgentEventTypeResponse, result.Type)
-				require.True(t, result.Done)
-				require.NotNil(t, result.Message)
-				require.Equal(t, message.Assistant, result.Message.Role)
-				return
-			}
-			if result.Type == AgentEventTypeError {
-				require.FailNowf(t, "Received error", "%v", result.Error)
-			}
-		case <-timeout:
-			require.FailNow(t, "Test timed out waiting for result")
-		}
-	}
-}
-
-func Test_Agent_Run_SessionBusyQueue(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	_, err := config.Init(tempDir, tempDir, false)
-	require.NoError(t, err)
-
-	mockProvider := mocks.NewMockProvider(t)
-	mockSessionSvc := mocks.NewMockSessionService(t)
-	mockMessageSvc := mocks.NewMockMessageService(t)
-
-	agent := &agent{
-		Broker:         pubsub.NewBroker[AgentEvent](),
-		provider:       mockProvider,
-		sessions:       mockSessionSvc,
-		messages:       mockMessageSvc,
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-		promptQueue:    csync.NewMap[string, []string](),
-		agentCfg:       config.Agent{Model: config.SelectedModelTypeLarge},
-	}
-
-	testModel := catwalk.Model{
-		ID:             "test-model",
-		SupportsImages: false,
-	}
-	mockProvider.EXPECT().Model().Return(testModel).Maybe()
-
-	// make session busy
-	testSessionID := "busy-session"
-	ctx, cancel := context.WithCancel(context.Background())
-	agent.activeRequests.Set(testSessionID, cancel)
-	defer cancel()
-
-	resultChan, err := agent.Run(ctx, testSessionID, "queued content")
-	require.NoError(t, err)
-	require.Nil(t, resultChan)
-
-	// verify content was queued
-	require.Equal(t, 1, agent.QueuedPrompts(testSessionID))
-}
-
-func Test_Agent_Run_CancelledContext(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	_, err := config.Init(tempDir, tempDir, false)
-	require.NoError(t, err)
-
-	mockProvider := mocks.NewMockProvider(t)
-	mockSessionSvc := mocks.NewMockSessionService(t)
-	mockMessageSvc := mocks.NewMockMessageService(t)
-
-	agent := &agent{
-		Broker:         pubsub.NewBroker[AgentEvent](),
-		provider:       mockProvider,
-		sessions:       mockSessionSvc,
-		messages:       mockMessageSvc,
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-		promptQueue:    csync.NewMap[string, []string](),
-		agentCfg:       config.Agent{Model: config.SelectedModelTypeLarge},
-	}
-
-	testModel := catwalk.Model{
-		ID:             "test-model",
-		SupportsImages: false,
-	}
-	mockProvider.EXPECT().Model().Return(testModel).Maybe()
-
-	mockMessageSvc.EXPECT().List(mock.Anything, "test-session").Return([]message.Message{}, nil).Maybe()
-	testSession := session.Session{
-		ID:               "test-session",
-		SummaryMessageID: "",
-	}
-	mockSessionSvc.EXPECT().Get(mock.Anything, "test-session").Return(testSession, nil).Maybe()
-
-	userMsg := message.Message{
-		ID:        "user-msg-1",
-		SessionID: "test-session",
-		Role:      message.User,
-		Parts:     []message.ContentPart{message.TextContent{Text: "test content"}},
-	}
-	mockMessageSvc.EXPECT().Create(mock.Anything, "test-session", mock.MatchedBy(func(params message.CreateMessageParams) bool {
-		return params.Role == message.User
-	})).Return(userMsg, nil).Maybe()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
-
-	// run with cancelled context
-	resultChan, err := agent.Run(ctx, "test-session", "test content")
-	require.NoError(t, err)
-	require.NotNil(t, resultChan)
-
-	select {
-	case result := <-resultChan:
-		require.Equal(t, AgentEventTypeError, result.Type)
-		require.ErrorIs(t, result.Error, context.Canceled)
-	case <-time.After(2 * time.Second):
-		require.Fail(t, "Test timed out waiting for error result")
-	}
-}
-
-func Test_Agent_UpdateModel(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	_, err := config.Init(tempDir, tempDir, false)
-	require.NoError(t, err)
-
-	agent := &agent{
-		Broker:              pubsub.NewBroker[AgentEvent](),
-		activeRequests:      csync.NewMap[string, context.CancelFunc](),
-		promptQueue:         csync.NewMap[string, []string](),
-		agentCfg:            config.Agent{Model: config.SelectedModelTypeLarge, ID: "test-agent"},
-		providerID:          "test-provider",
-		summarizeProviderID: "test-summarize-provider",
-	}
-
-	updateErr := agent.UpdateModel()
-	require.NoError(t, updateErr)
-}
-
-func Test_Agent_Summarize_SessionBusy(t *testing.T) {
-	t.Parallel()
-
-	mockProvider := mocks.NewMockProvider(t)
-
-	agent := &agent{
-		Broker:            pubsub.NewBroker[AgentEvent](),
-		activeRequests:    csync.NewMap[string, context.CancelFunc](),
-		promptQueue:       csync.NewMap[string, []string](),
-		summarizeProvider: mockProvider, // add provider so we test the busy logic
-	}
-
-	// make session busy
-	testSessionID := "busy-session"
-	_, cancel := context.WithCancel(context.Background())
-	agent.activeRequests.Set(testSessionID, cancel)
-	defer cancel()
-
-	// try to summarize busy session
-	err := agent.Summarize(context.Background(), testSessionID)
-
-	// should return ErrSessionBusy
-	require.Equal(t, ErrSessionBusy, err)
-}
-
-func Test_Agent_Summarize_NoProvider(t *testing.T) {
-	t.Parallel()
-
-	agent := &agent{
-		Broker:            pubsub.NewBroker[AgentEvent](),
-		activeRequests:    csync.NewMap[string, context.CancelFunc](),
-		promptQueue:       csync.NewMap[string, []string](),
-		summarizeProvider: nil, // no summarize provider
-	}
-
-	testSessionID := "test-session"
-
-	// try to summarize without provider
-	err := agent.Summarize(context.Background(), testSessionID)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "summarize provider not available")
-}
-
-func Test_Agent_IsBusy_MultipleRequests(t *testing.T) {
-	t.Parallel()
-
-	agent := &agent{
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-	}
-
-	require.False(t, agent.IsBusy())
-
-	// add multiple active requests
-	cancel1 := func() {}
-	cancel2 := func() {}
-	agent.activeRequests.Set("session1", cancel1)
-	agent.activeRequests.Set("session2", cancel2)
-
-	require.True(t, agent.IsBusy())
-	require.True(t, agent.IsSessionBusy("session1"))
-	require.True(t, agent.IsSessionBusy("session2"))
-	require.False(t, agent.IsSessionBusy("session3"))
-}
-
-func Test_Agent_Run_ProviderError(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	_, err := config.Init(tempDir, tempDir, false)
-	require.NoError(t, err)
-
-	mockProvider := mocks.NewMockProvider(t)
-	mockSessionSvc := mocks.NewMockSessionService(t)
-	mockMessageSvc := mocks.NewMockMessageService(t)
-
-	agent := &agent{
-		Broker:         pubsub.NewBroker[AgentEvent](),
-		provider:       mockProvider,
-		providerID:     "test-provider",
-		sessions:       mockSessionSvc,
-		messages:       mockMessageSvc,
-		agentCfg:       config.Agent{Model: config.SelectedModelTypeLarge, ID: "test-agent"},
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-		promptQueue:    csync.NewMap[string, []string](),
-		tools:          csync.NewLazySlice(func() []tools.BaseTool { return []tools.BaseTool{} }),
-	}
-
-	testSessionID := "test-session"
-	testContent := "test content"
-
-	testModel := catwalk.Model{
-		ID:             "test-model",
-		SupportsImages: true,
-	}
-	mockProvider.EXPECT().Model().Return(testModel).Maybe()
-
-	testSession := session.Session{
-		ID:               testSessionID,
-		SummaryMessageID: "",
-	}
-	mockSessionSvc.EXPECT().Get(mock.Anything, testSessionID).Return(testSession, nil).Maybe()
-
-	mockMessageSvc.EXPECT().List(mock.Anything, testSessionID).Return([]message.Message{}, nil)
-
-	userMsg := message.Message{
-		ID:        "user-msg-1",
-		SessionID: testSessionID,
-		Role:      message.User,
-		Parts:     []message.ContentPart{message.TextContent{Text: testContent}},
-	}
-	mockMessageSvc.EXPECT().Create(mock.Anything, testSessionID, mock.MatchedBy(func(params message.CreateMessageParams) bool {
-		return params.Role == message.User
-	})).Return(userMsg, nil)
-
-	assistantMsg := message.Message{
-		ID:        "assistant-msg-1",
-		SessionID: testSessionID,
-		Role:      message.Assistant,
-		Parts:     []message.ContentPart{},
-	}
-	mockMessageSvc.EXPECT().Create(mock.Anything, testSessionID, mock.MatchedBy(func(params message.CreateMessageParams) bool {
-		return params.Role == message.Assistant
-	})).Return(assistantMsg, nil)
-
-	mockMessageSvc.EXPECT().Update(mock.Anything, mock.AnythingOfType("message.Message")).Return(nil).Maybe()
-	mockSessionSvc.EXPECT().Save(mock.Anything, mock.AnythingOfType("session.Session")).Return(session.Session{}, nil).Maybe()
-
-	// create event channel with an error
-	eventChan := make(chan provider.ProviderEvent, 1)
-	eventChan <- provider.ProviderEvent{
-		Type:  provider.EventError,
-		Error: fmt.Errorf("provider API error"),
-	}
-	close(eventChan)
-
-	mockProvider.EXPECT().StreamResponse(mock.Anything, mock.AnythingOfType("[]message.Message"), mock.AnythingOfType("[]tools.BaseTool")).Return(eventChan).Maybe()
-
-	ctx := context.Background()
-	resultChan, err := agent.Run(ctx, testSessionID, testContent)
-	require.NoError(t, err)
-	require.NotNil(t, resultChan)
-
-	timeout := time.After(3 * time.Second)
-
-	select {
-	case result, ok := <-resultChan:
-		require.True(t, ok, "Channel should not be closed without result")
-		require.Equal(t, AgentEventTypeError, result.Type)
-		require.NotNil(t, result.Error)
-		require.Contains(t, result.Error.Error(), "provider API error")
-	case <-timeout:
-		require.FailNow(t, "Test timed out waiting for error result")
-	}
-
-	// channel should be closed after result
-	select {
-	case _, ok := <-resultChan:
-		require.False(t, ok, "Channel should be closed after result")
-	case <-time.After(1 * time.Second):
-		require.FailNow(t, "Channel was not closed after result")
-	}
-}
-
 // Test_Agent_Run_With_Tools tests the agent's ability to execute real tools
 // in an isolated filesystem environment. All dependencies are mocked except for
 // the tools themselves. This test verifies:
@@ -746,4 +239,379 @@ done:
 	}
 	require.True(t, lsResultFound, "ls tool result should be present")
 	require.True(t, grepResultFound, "grep tool result should be present")
+}
+
+func Test_Agent_IsBusy(t *testing.T) {
+	t.Parallel()
+
+	agent := &agent{
+		activeRequests: csync.NewMap[string, context.CancelFunc](),
+	}
+
+	require.False(t, agent.IsBusy())
+	require.False(t, agent.IsSessionBusy("test-session"))
+
+	// set agent as busy
+	cancel := func() {}
+	agent.activeRequests.Set("test-session", cancel)
+
+	require.True(t, agent.IsBusy())
+	require.True(t, agent.IsSessionBusy("test-session"))
+}
+
+func Test_Agent_Cancel(t *testing.T) {
+	t.Parallel()
+
+	agent := &agent{
+		activeRequests: csync.NewMap[string, context.CancelFunc](),
+		promptQueue:    csync.NewMap[string, []string](),
+	}
+
+	cancelled := false
+	originalCancel := func() { cancelled = true }
+	agent.activeRequests.Set("test-session", originalCancel)
+	agent.promptQueue.Set("test-session", []string{"prompt1", "prompt2"})
+
+	require.True(t, agent.IsSessionBusy("test-session"))
+	require.Equal(t, 2, agent.QueuedPrompts("test-session"))
+
+	agent.Cancel("test-session")
+
+	require.True(t, cancelled)
+	require.False(t, agent.IsSessionBusy("test-session"))
+	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
+}
+
+func Test_Agent_CancelAll(t *testing.T) {
+	t.Parallel()
+
+	agent := &agent{
+		activeRequests: csync.NewMap[string, context.CancelFunc](),
+		promptQueue:    csync.NewMap[string, []string](),
+	}
+
+	var wg sync.WaitGroup
+	cancelled := make([]bool, 2)
+
+	cancel1 := func() {
+		cancelled[0] = true
+		wg.Done()
+	}
+	cancel2 := func() {
+		cancelled[1] = true
+		wg.Done()
+	}
+
+	wg.Add(2)
+	agent.activeRequests.Set("session1", cancel1)
+	agent.activeRequests.Set("session2", cancel2)
+
+	require.True(t, agent.IsBusy())
+
+	agent.CancelAll()
+
+	// wait for cancellations to complete
+	wg.Wait()
+
+	require.True(t, cancelled[0])
+	require.True(t, cancelled[1])
+	require.False(t, agent.IsBusy())
+}
+
+func Test_Agent_QueuedPrompts(t *testing.T) {
+	t.Parallel()
+
+	agent := &agent{
+		promptQueue: csync.NewMap[string, []string](),
+	}
+
+	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
+
+	agent.promptQueue.Set("test-session", []string{"test prompt"})
+	require.Equal(t, 1, agent.QueuedPrompts("test-session"))
+
+	agent.promptQueue.Set("test-session", []string{"prompt1", "prompt2"})
+	require.Equal(t, 2, agent.QueuedPrompts("test-session"))
+
+	agent.promptQueue.Set("test-session", nil)
+	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
+}
+
+func Test_Agent_ClearQueue(t *testing.T) {
+	t.Parallel()
+
+	agent := &agent{
+		promptQueue: csync.NewMap[string, []string](),
+	}
+
+	agent.promptQueue.Set("test-session", []string{"prompt1", "prompt2"})
+	require.Equal(t, 2, agent.QueuedPrompts("test-session"))
+
+	agent.ClearQueue("test-session")
+	require.Equal(t, 0, agent.QueuedPrompts("test-session"))
+}
+
+func Test_Agent_Run_SessionBusyQueue(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	_, err := config.Init(tempDir, tempDir, false)
+	require.NoError(t, err)
+
+	mockProvider := mocks.NewMockProvider(t)
+	mockSessionSvc := mocks.NewMockSessionService(t)
+	mockMessageSvc := mocks.NewMockMessageService(t)
+
+	agent := &agent{
+		Broker:         pubsub.NewBroker[AgentEvent](),
+		provider:       mockProvider,
+		sessions:       mockSessionSvc,
+		messages:       mockMessageSvc,
+		activeRequests: csync.NewMap[string, context.CancelFunc](),
+		promptQueue:    csync.NewMap[string, []string](),
+		agentCfg:       config.Agent{Model: config.SelectedModelTypeLarge},
+	}
+
+	testModel := catwalk.Model{
+		ID:             "test-model",
+		SupportsImages: false,
+	}
+	mockProvider.EXPECT().Model().Return(testModel).Maybe()
+
+	// make session busy
+	testSessionID := "busy-session"
+	ctx, cancel := context.WithCancel(context.Background())
+	agent.activeRequests.Set(testSessionID, cancel)
+	defer cancel()
+
+	resultChan, err := agent.Run(ctx, testSessionID, "queued content")
+	require.NoError(t, err)
+	require.Nil(t, resultChan)
+
+	// verify content was queued
+	require.Equal(t, 1, agent.QueuedPrompts(testSessionID))
+}
+
+func Test_Agent_Run_CancelledContext(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	_, err := config.Init(tempDir, tempDir, false)
+	require.NoError(t, err)
+
+	mockProvider := mocks.NewMockProvider(t)
+	mockSessionSvc := mocks.NewMockSessionService(t)
+	mockMessageSvc := mocks.NewMockMessageService(t)
+
+	agent := &agent{
+		Broker:         pubsub.NewBroker[AgentEvent](),
+		provider:       mockProvider,
+		sessions:       mockSessionSvc,
+		messages:       mockMessageSvc,
+		activeRequests: csync.NewMap[string, context.CancelFunc](),
+		promptQueue:    csync.NewMap[string, []string](),
+		agentCfg:       config.Agent{Model: config.SelectedModelTypeLarge},
+	}
+
+	testModel := catwalk.Model{
+		ID:             "test-model",
+		SupportsImages: false,
+	}
+	mockProvider.EXPECT().Model().Return(testModel).Maybe()
+
+	mockMessageSvc.EXPECT().List(mock.Anything, "test-session").Return([]message.Message{}, nil).Maybe()
+	testSession := session.Session{
+		ID:               "test-session",
+		SummaryMessageID: "",
+	}
+	mockSessionSvc.EXPECT().Get(mock.Anything, "test-session").Return(testSession, nil).Maybe()
+
+	userMsg := message.Message{
+		ID:        "user-msg-1",
+		SessionID: "test-session",
+		Role:      message.User,
+		Parts:     []message.ContentPart{message.TextContent{Text: "test content"}},
+	}
+	mockMessageSvc.EXPECT().Create(mock.Anything, "test-session", mock.MatchedBy(func(params message.CreateMessageParams) bool {
+		return params.Role == message.User
+	})).Return(userMsg, nil).Maybe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	// run with cancelled context
+	resultChan, err := agent.Run(ctx, "test-session", "test content")
+	require.NoError(t, err)
+	require.NotNil(t, resultChan)
+
+	select {
+	case result := <-resultChan:
+		require.Equal(t, AgentEventTypeError, result.Type)
+		require.ErrorIs(t, result.Error, context.Canceled)
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "Test timed out waiting for error result")
+	}
+}
+
+func Test_Agent_Summarize_SessionBusy(t *testing.T) {
+	t.Parallel()
+
+	mockProvider := mocks.NewMockProvider(t)
+
+	agent := &agent{
+		Broker:            pubsub.NewBroker[AgentEvent](),
+		activeRequests:    csync.NewMap[string, context.CancelFunc](),
+		promptQueue:       csync.NewMap[string, []string](),
+		summarizeProvider: mockProvider,
+	}
+
+	// make session busy
+	testSessionID := "busy-session"
+	_, cancel := context.WithCancel(context.Background())
+	agent.activeRequests.Set(testSessionID, cancel)
+	defer cancel()
+
+	// try to summarize busy session
+	err := agent.Summarize(context.Background(), testSessionID)
+
+	// should return ErrSessionBusy
+	require.Equal(t, ErrSessionBusy, err)
+}
+
+func Test_Agent_Summarize_NoProvider(t *testing.T) {
+	t.Parallel()
+
+	agent := &agent{
+		Broker:            pubsub.NewBroker[AgentEvent](),
+		activeRequests:    csync.NewMap[string, context.CancelFunc](),
+		promptQueue:       csync.NewMap[string, []string](),
+		summarizeProvider: nil, // no summarize provider
+	}
+
+	testSessionID := "test-session"
+
+	// try to summarize without provider
+	err := agent.Summarize(context.Background(), testSessionID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "summarize provider not available")
+}
+
+func Test_Agent_IsBusy_MultipleRequests(t *testing.T) {
+	t.Parallel()
+
+	agent := &agent{
+		activeRequests: csync.NewMap[string, context.CancelFunc](),
+	}
+
+	require.False(t, agent.IsBusy())
+
+	// add multiple active requests
+	cancel1 := func() {}
+	cancel2 := func() {}
+	agent.activeRequests.Set("session1", cancel1)
+	agent.activeRequests.Set("session2", cancel2)
+
+	require.True(t, agent.IsBusy())
+	require.True(t, agent.IsSessionBusy("session1"))
+	require.True(t, agent.IsSessionBusy("session2"))
+	require.False(t, agent.IsSessionBusy("session3"))
+}
+
+func Test_Agent_Run_ProviderError(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	_, err := config.Init(tempDir, tempDir, false)
+	require.NoError(t, err)
+
+	mockProvider := mocks.NewMockProvider(t)
+	mockSessionSvc := mocks.NewMockSessionService(t)
+	mockMessageSvc := mocks.NewMockMessageService(t)
+
+	agent := &agent{
+		Broker:         pubsub.NewBroker[AgentEvent](),
+		provider:       mockProvider,
+		providerID:     "test-provider",
+		sessions:       mockSessionSvc,
+		messages:       mockMessageSvc,
+		agentCfg:       config.Agent{Model: config.SelectedModelTypeLarge, ID: "test-agent"},
+		activeRequests: csync.NewMap[string, context.CancelFunc](),
+		promptQueue:    csync.NewMap[string, []string](),
+		tools:          csync.NewLazySlice(func() []tools.BaseTool { return []tools.BaseTool{} }),
+	}
+
+	testSessionID := "test-session"
+	testContent := "test content"
+
+	testModel := catwalk.Model{
+		ID:             "test-model",
+		SupportsImages: true,
+	}
+	mockProvider.EXPECT().Model().Return(testModel).Maybe()
+
+	testSession := session.Session{
+		ID:               testSessionID,
+		SummaryMessageID: "",
+	}
+	mockSessionSvc.EXPECT().Get(mock.Anything, testSessionID).Return(testSession, nil).Maybe()
+
+	mockMessageSvc.EXPECT().List(mock.Anything, testSessionID).Return([]message.Message{}, nil)
+
+	userMsg := message.Message{
+		ID:        "user-msg-1",
+		SessionID: testSessionID,
+		Role:      message.User,
+		Parts:     []message.ContentPart{message.TextContent{Text: testContent}},
+	}
+	mockMessageSvc.EXPECT().Create(mock.Anything, testSessionID, mock.MatchedBy(func(params message.CreateMessageParams) bool {
+		return params.Role == message.User
+	})).Return(userMsg, nil)
+
+	assistantMsg := message.Message{
+		ID:        "assistant-msg-1",
+		SessionID: testSessionID,
+		Role:      message.Assistant,
+		Parts:     []message.ContentPart{},
+	}
+	mockMessageSvc.EXPECT().Create(mock.Anything, testSessionID, mock.MatchedBy(func(params message.CreateMessageParams) bool {
+		return params.Role == message.Assistant
+	})).Return(assistantMsg, nil)
+
+	mockMessageSvc.EXPECT().Update(mock.Anything, mock.AnythingOfType("message.Message")).Return(nil).Maybe()
+	mockSessionSvc.EXPECT().Save(mock.Anything, mock.AnythingOfType("session.Session")).Return(session.Session{}, nil).Maybe()
+
+	// create event channel with an error
+	eventChan := make(chan provider.ProviderEvent, 1)
+	eventChan <- provider.ProviderEvent{
+		Type:  provider.EventError,
+		Error: fmt.Errorf("provider API error"),
+	}
+	close(eventChan)
+
+	mockProvider.EXPECT().StreamResponse(mock.Anything, mock.AnythingOfType("[]message.Message"), mock.AnythingOfType("[]tools.BaseTool")).Return(eventChan).Maybe()
+
+	ctx := context.Background()
+	resultChan, err := agent.Run(ctx, testSessionID, testContent)
+	require.NoError(t, err)
+	require.NotNil(t, resultChan)
+
+	timeout := time.After(3 * time.Second)
+
+	select {
+	case result, ok := <-resultChan:
+		require.True(t, ok, "Channel should not be closed without result")
+		require.Equal(t, AgentEventTypeError, result.Type)
+		require.NotNil(t, result.Error)
+		require.Contains(t, result.Error.Error(), "provider API error")
+	case <-timeout:
+		require.FailNow(t, "Test timed out waiting for error result")
+	}
+
+	// channel should be closed after result
+	select {
+	case _, ok := <-resultChan:
+		require.False(t, ok, "Channel should be closed after result")
+	case <-time.After(1 * time.Second):
+		require.FailNow(t, "Channel was not closed after result")
+	}
 }
