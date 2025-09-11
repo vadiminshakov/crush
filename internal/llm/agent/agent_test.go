@@ -135,7 +135,7 @@ func Test_Agent_Run_With_Tools(t *testing.T) {
 	mockMessageSvc.EXPECT().Update(mock.Anything, mock.AnythingOfType("message.Message")).Return(nil).Maybe()
 
 	// create event channel with tool execution flow
-	// first response: Agent decides to use tools
+	// first response: agent decides to use tools
 	eventChan := make(chan provider.ProviderEvent, 2)
 	eventChan <- provider.ProviderEvent{
 		Type:    provider.EventContentDelta,
