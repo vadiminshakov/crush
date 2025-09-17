@@ -25,6 +25,8 @@ import (
 	"github.com/charmbracelet/crush/internal/shell"
 )
 
+const streamTimeout = 80 * time.Second
+
 // Common errors
 var (
 	ErrRequestCancelled = errors.New("request canceled by user")
@@ -536,7 +538,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		return assistantMsg, nil, toolsErr
 	}
 	// Now collect tools (which may block on MCP initialization)
-	eventChan := a.provider.StreamResponse(ctx, msgHistory, allTools)
+	streamCtx, streamCancel := context.WithTimeout(ctx, streamTimeout)
+	defer streamCancel()
+	eventChan := a.provider.StreamResponse(streamCtx, msgHistory, allTools)
 
 	// Add the session and message ID into the context if needed by tools.
 	ctx = context.WithValue(ctx, tools.MessageIDContextKey, assistantMsg.ID)
