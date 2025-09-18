@@ -25,7 +25,7 @@ import (
 	"github.com/charmbracelet/crush/internal/shell"
 )
 
-const streamTimeout = 80 * time.Second
+const streamChunkTimeout = 80 * time.Second
 
 // Common errors
 var (
@@ -538,28 +538,36 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		return assistantMsg, nil, toolsErr
 	}
 	// Now collect tools (which may block on MCP initialization)
-	streamCtx, streamCancel := context.WithTimeout(ctx, streamTimeout)
-	defer streamCancel()
-	eventChan := a.provider.StreamResponse(streamCtx, msgHistory, allTools)
+	eventChan := a.provider.StreamResponse(ctx, msgHistory, allTools)
 
 	// Add the session and message ID into the context if needed by tools.
 	ctx = context.WithValue(ctx, tools.MessageIDContextKey, assistantMsg.ID)
 
 	// Process each event in the stream.
-	for event := range eventChan {
-		if processErr := a.processEvent(ctx, sessionID, &assistantMsg, event); processErr != nil {
-			if errors.Is(processErr, context.Canceled) {
-				a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled, "Request cancelled", "")
-			} else {
-				a.finishMessage(ctx, &assistantMsg, message.FinishReasonError, "API Error", processErr.Error())
+	for {
+		select {
+		case event, ok := <-eventChan:
+			if !ok {
+				goto streamDone
 			}
-			return assistantMsg, nil, processErr
-		}
-		if ctx.Err() != nil {
+			if processErr := a.processEvent(ctx, sessionID, &assistantMsg, event); processErr != nil {
+				if errors.Is(processErr, context.Canceled) {
+					a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled, "Request cancelled", "")
+				} else {
+					a.finishMessage(ctx, &assistantMsg, message.FinishReasonError, "API Error", processErr.Error())
+				}
+				return assistantMsg, nil, processErr
+			}
+		case <-time.After(streamChunkTimeout):
+			a.finishMessage(ctx, &assistantMsg, message.FinishReasonError, "Stream timeout", "No chunk received within timeout")
+			return assistantMsg, nil, fmt.Errorf("stream chunk timeout")
+		case <-ctx.Done():
 			a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled, "Request cancelled", "")
 			return assistantMsg, nil, ctx.Err()
 		}
 	}
+	
+streamDone:
 
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
