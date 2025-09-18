@@ -566,7 +566,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			return assistantMsg, nil, ctx.Err()
 		}
 	}
-	
+
 streamDone:
 
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
