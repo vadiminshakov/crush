@@ -544,11 +544,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	ctx = context.WithValue(ctx, tools.MessageIDContextKey, assistantMsg.ID)
 
 	// Process each event in the stream.
+loop:
 	for {
 		select {
 		case event, ok := <-eventChan:
 			if !ok {
-				goto breakLoop
+				break loop
 			}
 			if processErr := a.processEvent(ctx, sessionID, &assistantMsg, event); processErr != nil {
 				if errors.Is(processErr, context.Canceled) {
@@ -566,8 +567,6 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			return assistantMsg, nil, ctx.Err()
 		}
 	}
-
-breakLoop:
 
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
