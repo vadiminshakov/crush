@@ -548,7 +548,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		select {
 		case event, ok := <-eventChan:
 			if !ok {
-				goto streamDone
+				goto breakLoop
 			}
 			if processErr := a.processEvent(ctx, sessionID, &assistantMsg, event); processErr != nil {
 				if errors.Is(processErr, context.Canceled) {
@@ -567,7 +567,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		}
 	}
 
-streamDone:
+breakLoop:
 
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
