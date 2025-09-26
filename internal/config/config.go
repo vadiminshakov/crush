@@ -118,7 +118,7 @@ type MCPConfig struct {
 
 type LSPConfig struct {
 	Disabled    bool              `json:"disabled,omitempty" jsonschema:"description=Whether this LSP server is disabled,default=false"`
-	Command     string            `json:"command" jsonschema:"required,description=Command to execute for the LSP server,example=gopls"`
+	Command     string            `json:"command,omitempty" jsonschema:"required,description=Command to execute for the LSP server,example=gopls"`
 	Args        []string          `json:"args,omitempty" jsonschema:"description=Arguments to pass to the LSP server command"`
 	Env         map[string]string `json:"env,omitempty" jsonschema:"description=Environment variables to set to the LSP server command"`
 	FileTypes   []string          `json:"filetypes,omitempty" jsonschema:"description=File types this LSP server handles,example=go,example=mod,example=rs,example=c,example=js,example=ts"`
@@ -153,6 +153,7 @@ type Options struct {
 	DisabledTools             []string     `json:"disabled_tools" jsonschema:"description=Tools to disable"`
 	DisableProviderAutoUpdate bool         `json:"disable_provider_auto_update,omitempty" jsonschema:"description=Disable providers auto-update,default=false"`
 	Attribution               *Attribution `json:"attribution,omitempty" jsonschema:"description=Attribution settings for generated content"`
+	DisableMetrics            bool         `json:"disable_metrics,omitempty" jsonschema:"description=Disable sending metrics,default=false"`
 }
 
 type MCPs map[string]MCPConfig
@@ -427,6 +428,7 @@ func (c *Config) SetProviderAPIKey(providerID, apiKey string) error {
 
 func allToolNames() []string {
 	return []string{
+		"agent",
 		"bash",
 		"download",
 		"edit",
@@ -508,7 +510,7 @@ func (c *ProviderConfig) TestConnection(resolver VariableResolver) error {
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
 		}
-		if c.ID == "openrouter" {
+		if c.ID == string(catwalk.InferenceProviderOpenRouter) {
 			testURL = baseURL + "/credits"
 		} else {
 			testURL = baseURL + "/models"
@@ -546,8 +548,15 @@ func (c *ProviderConfig) TestConnection(resolver VariableResolver) error {
 	if err != nil {
 		return fmt.Errorf("failed to create request for provider %s: %w", c.ID, err)
 	}
-	if b.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to connect to provider %s: %s", c.ID, b.Status)
+	if c.ID == string(catwalk.InferenceProviderZAI) {
+		if b.StatusCode == http.StatusUnauthorized {
+			// for z.ai just check if the http response is not 401
+			return fmt.Errorf("failed to connect to provider %s: %s", c.ID, b.Status)
+		}
+	} else {
+		if b.StatusCode != http.StatusOK {
+			return fmt.Errorf("failed to connect to provider %s: %s", c.ID, b.Status)
+		}
 	}
 	_ = b.Body.Close()
 	return nil
