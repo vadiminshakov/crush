@@ -28,12 +28,6 @@ import (
 
 const streamChunkTimeout = 80 * time.Second
 
-// Common errors
-var (
-	ErrRequestCancelled = errors.New("request canceled by user")
-	ErrSessionBusy      = errors.New("session is currently processing another request")
-)
-
 type AgentEventType string
 
 const (
