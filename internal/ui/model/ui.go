@@ -111,6 +111,13 @@ const (
 	uiChat
 )
 
+type uiInputMode uint8
+
+const (
+	uiInputModeCode uiInputMode = iota
+	uiInputModePlan
+)
+
 type openEditorMsg struct {
 	Text string
 }
@@ -186,6 +193,7 @@ type UI struct {
 
 	focus uiFocusState
 	state uiState
+	mode  uiInputMode
 
 	keyMap KeyMap
 	keyenh tea.KeyboardEnhancementsMsg
@@ -352,7 +360,8 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 
 	status := NewStatus(com, ui)
 
-	ui.setEditorPrompt(com.Workspace.PermissionSkipRequests())
+	ui.mode = uiInputModeCode
+	ui.setEditorPrompt(com.Workspace.PermissionSkipRequests(), ui.mode)
 	ui.randomizePlaceholders()
 	ui.textarea.Placeholder = ui.readyPlaceholder
 	ui.status = status
@@ -1413,7 +1422,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionToggleYoloMode:
 		yolo := !m.com.Workspace.PermissionSkipRequests()
 		m.com.Workspace.PermissionSetSkipRequests(yolo)
-		m.setEditorPrompt(yolo)
+		m.setEditorPrompt(yolo, m.mode)
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
@@ -1939,6 +1948,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 
 			switch {
+			case key.Matches(msg, m.keyMap.ShiftTab):
+				if cmd := m.toggleInputMode(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Editor.AddImage):
 				if !m.currentModelSupportsImages() {
 					break
@@ -2095,6 +2108,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 		case uiFocusMain:
 			switch {
+			case key.Matches(msg, m.keyMap.ShiftTab):
+				if cmd := m.toggleInputMode(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Tab):
 				m.focus = uiFocusEditor
 				cmds = append(cmds, m.textarea.Focus())
@@ -2392,6 +2409,7 @@ func (m *UI) ShortHelp() []key.Binding {
 		binds = append(
 			binds,
 			tab,
+			k.ShiftTab,
 			commands,
 			k.Models,
 		)
@@ -2478,6 +2496,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 		mainBinds = append(
 			mainBinds,
 			tab,
+			k.ShiftTab,
 			commands,
 			k.Models,
 			k.Sessions,
@@ -2947,9 +2966,13 @@ func (m *UI) openEditor(value string) tea.Cmd {
 
 // setEditorPrompt configures the textarea prompt function based on whether
 // yolo mode is enabled.
-func (m *UI) setEditorPrompt(yolo bool) {
+func (m *UI) setEditorPrompt(yolo bool, mode uiInputMode) {
 	if yolo {
 		m.textarea.SetPromptFunc(4, m.yoloPromptFunc)
+		return
+	}
+	if mode == uiInputModePlan {
+		m.textarea.SetPromptFunc(4, m.planPromptFunc)
 		return
 	}
 	m.textarea.SetPromptFunc(4, m.normalPromptFunc)
@@ -2964,6 +2987,20 @@ func (m *UI) normalPromptFunc(info textarea.PromptInfo) string {
 			return "  > "
 		}
 		return "::: "
+	}
+	if info.Focused {
+		return t.Editor.PromptNormalFocused.Render()
+	}
+	return t.Editor.PromptNormalBlurred.Render()
+}
+
+func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return "[plan] > "
+		}
+		return "[plan]:: "
 	}
 	if info.Focused {
 		return t.Editor.PromptNormalFocused.Render()
@@ -2986,6 +3023,30 @@ func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
 		return t.Editor.PromptYoloDotsFocused.Render()
 	}
 	return t.Editor.PromptYoloDotsBlurred.Render()
+}
+
+func (m *UI) toggleInputMode() tea.Cmd {
+	targetMode := uiInputModePlan
+	targetAgentID := config.AgentPlan
+	targetModeLabel := "plan"
+	if m.mode == uiInputModePlan {
+		targetMode = uiInputModeCode
+		targetAgentID = config.AgentCoder
+		targetModeLabel = "code"
+	}
+
+	return func() tea.Msg {
+		if err := m.com.Workspace.AgentSetMain(targetAgentID); err != nil {
+			return util.ReportError(err)()
+		}
+
+		m.mode = targetMode
+		m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests(), m.mode)
+		if err := m.com.Workspace.UpdateAgentModel(context.Background()); err != nil {
+			return util.ReportError(err)()
+		}
+		return util.NewInfoMsg("input mode: " + targetModeLabel)
+	}
 }
 
 // closeCompletions closes the completions popup and resets state.
