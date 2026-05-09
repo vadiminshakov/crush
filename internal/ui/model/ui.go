@@ -2806,8 +2806,8 @@ func (m *UI) ShortHelp() []key.Binding {
 		// TODO: other states
 		// if m.session == nil {
 		// no session selected
-		binds = append(
-			binds,
+		binds = append(binds,
+			k.ShiftTab,
 			commands,
 			k.Models,
 			k.Editor.Newline,
@@ -2933,6 +2933,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 			binds = append(
 				binds,
 				[]key.Binding{
+					k.ShiftTab,
 					commands,
 					k.Models,
 					k.Sessions,
