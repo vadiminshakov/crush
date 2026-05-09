@@ -2568,8 +2568,8 @@ func (m *UI) ShortHelp() []key.Binding {
 		// TODO: other states
 		// if m.session == nil {
 		// no session selected
-		binds = append(
-			binds,
+		binds = append(binds,
+			k.ShiftTab,
 			commands,
 			k.Models,
 			k.Editor.Newline,
@@ -2695,6 +2695,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 			binds = append(
 				binds,
 				[]key.Binding{
+					k.ShiftTab,
 					commands,
 					k.Models,
 					k.Sessions,
@@ -3113,6 +3114,10 @@ func (m *UI) openEditor(value string) tea.Cmd {
 // setEditorPrompt configures the textarea prompt icon based on
 // whether yolo mode is enabled.
 func (m *UI) setEditorPrompt(yolo bool, mode uiInputMode) {
+	if yolo && mode == uiInputModePlan {
+		m.textarea.SetPromptFunc(4, m.yoloPlanPromptFunc)
+		return
+	}
 	if yolo {
 		m.textarea.SetPromptFunc(4, m.yoloPromptFunc)
 		return
@@ -3152,6 +3157,20 @@ func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
 		return t.Editor.PromptNormalFocused.Render()
 	}
 	return t.Editor.PromptNormalBlurred.Render()
+}
+
+func (m *UI) yoloPlanPromptFunc(info textarea.PromptInfo) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return t.Editor.PromptYoloIconFocused.Render() + "[plan] > "
+		}
+		return t.Editor.PromptYoloIconBlurred.Render() + "[plan]:: "
+	}
+	if info.Focused {
+		return t.Editor.PromptYoloDotsFocused.Render()
+	}
+	return t.Editor.PromptYoloDotsBlurred.Render()
 }
 
 // yoloPromptFunc returns the yolo mode editor prompt style with warning icon
