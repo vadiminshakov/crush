@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/goal"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/oauth"
@@ -161,8 +162,42 @@ func (w *AppWorkspace) InitCoderAgent(ctx context.Context) error {
 	return w.app.InitCoderAgent(ctx)
 }
 
+func (w *AppWorkspace) GoalRuntime() *goal.Runtime {
+	return w.app.GoalRuntime
+}
+
 func (w *AppWorkspace) GetDefaultSmallModel(providerID string) config.SelectedModel {
 	return w.app.GetDefaultSmallModel(providerID)
+}
+
+// -- Goals --
+
+func (w *AppWorkspace) GoalGet(ctx context.Context, sessionID string) (*goal.Goal, error) {
+	return w.app.GoalService.Get(ctx, sessionID)
+}
+
+func (w *AppWorkspace) GoalSet(ctx context.Context, sessionID, objective string) (*goal.Goal, error) {
+	return w.app.GoalService.CreateOrReplace(ctx, sessionID, objective)
+}
+
+func (w *AppWorkspace) GoalPause(ctx context.Context, sessionID string) (*goal.Goal, error) {
+	g, err := w.app.GoalService.Get(ctx, sessionID)
+	if err != nil || g == nil {
+		return nil, err
+	}
+	return w.app.GoalService.UpdateStatus(ctx, sessionID, g.GoalID, goal.GoalPaused)
+}
+
+func (w *AppWorkspace) GoalResume(ctx context.Context, sessionID string) (*goal.Goal, error) {
+	g, err := w.app.GoalService.Get(ctx, sessionID)
+	if err != nil || g == nil {
+		return nil, err
+	}
+	return w.app.GoalService.UpdateStatus(ctx, sessionID, g.GoalID, goal.GoalActive)
+}
+
+func (w *AppWorkspace) GoalClear(ctx context.Context, sessionID string) error {
+	return w.app.GoalService.Clear(ctx, sessionID)
 }
 
 // -- Permissions --

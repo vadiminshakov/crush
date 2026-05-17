@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -25,6 +26,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/filetracker"
+	"github.com/charmbracelet/crush/internal/goal"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/hooks"
@@ -66,6 +68,7 @@ type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	RunWithContext(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -76,6 +79,7 @@ type Coordinator interface {
 	Summarize(context.Context, string) error
 	Model() Model
 	UpdateModels(ctx context.Context) error
+	GoalRuntime() *goal.Runtime
 }
 
 type coordinator struct {
@@ -85,6 +89,8 @@ type coordinator struct {
 	permissions permission.Service
 	history     history.Service
 	filetracker filetracker.Service
+	goalService goal.Service
+	goalRuntime *goal.Runtime
 	lspManager  *lsp.Manager
 	notify      pubsub.Publisher[notify.Notification]
 
@@ -107,6 +113,7 @@ func NewCoordinator(
 	permissions permission.Service,
 	history history.Service,
 	filetracker filetracker.Service,
+	goalService goal.Service,
 	lspManager *lsp.Manager,
 	notify pubsub.Publisher[notify.Notification],
 ) (Coordinator, error) {
@@ -121,6 +128,7 @@ func NewCoordinator(
 		permissions:  permissions,
 		history:      history,
 		filetracker:  filetracker,
+		goalService:  goalService,
 		lspManager:   lspManager,
 		notify:       notify,
 		agents:       make(map[string]SessionAgent),
@@ -128,6 +136,7 @@ func NewCoordinator(
 		activeSkills: activeSkills,
 		skillTracker: skillTracker,
 	}
+	c.goalRuntime = goal.NewRuntime(goalService, sessions, c, notify)
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
 	if !ok {
@@ -151,6 +160,10 @@ func NewCoordinator(
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return c.RunWithContext(ctx, sessionID, prompt, attachments...)
+}
+
+func (c *coordinator) RunWithContext(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -228,6 +241,15 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 			slog.Debug("Retrying request with refreshed API key", "provider", providerCfg.ID)
 			return run()
 		}
+	}
+
+	if originalErr == nil {
+		go func() {
+			// Give some time for the current Run call to return and the
+			// session to become idle.
+			time.Sleep(100 * time.Millisecond)
+			c.goalRuntime.OnTurnFinished(context.Background(), sessionID)
+		}()
 	}
 
 	return result, originalErr
@@ -490,6 +512,8 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	}
 
 	allTools = append(allTools,
+		tools.NewGetGoalTool(c.goalService),
+		tools.NewUpdateGoalTool(c.goalService),
 		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.Attribution, modelName),
 		tools.NewCrushInfoTool(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker),
 		tools.NewCrushLogsTool(logFile),
@@ -925,6 +949,10 @@ func (c *coordinator) IsSessionBusy(sessionID string) bool {
 
 func (c *coordinator) Model() Model {
 	return c.currentAgent.Model()
+}
+
+func (c *coordinator) GoalRuntime() *goal.Runtime {
+	return c.goalRuntime
 }
 
 func (c *coordinator) UpdateModels(ctx context.Context) error {

@@ -31,6 +31,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/commands"
+	"github.com/charmbracelet/crush/internal/goal"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/history"
@@ -272,6 +273,9 @@ type UI struct {
 
 	// hyperCredits is the remaining Hyper credits, updated after each prompt.
 	hyperCredits *int
+
+	// currentGoal is the active goal for the current session.
+	currentGoal *goal.Goal
 
 	// Prompt history for up/down navigation through previous messages.
 	promptHistory struct {
@@ -523,6 +527,16 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session = msg.session
 		m.sessionFiles = msg.files
 		cmds = append(cmds, m.startLSPs(msg.lspFilePaths()))
+		cmds = append(cmds, func() tea.Msg {
+			g, err := m.com.Workspace.GoalGet(context.Background(), m.session.ID)
+			if err != nil {
+				return nil
+			}
+			return pubsub.Event[goal.Goal]{
+				Type:    pubsub.UpdatedEvent,
+				Payload: *g,
+			}
+		})
 		msgs, err := m.com.Workspace.ListMessages(context.Background(), m.session.ID)
 		if err != nil {
 			cmds = append(cmds, util.ReportError(err))
@@ -531,8 +545,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.setSessionMessages(msgs); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		if hasInProgressTodo(m.session.Todos) {
-			// only start spinner if there is an in-progress todo
+		if hasInProgressTodo(m.session.Todos) || hasInProgressGoal(m.currentGoal) {
+			// only start spinner if there is an in-progress todo or goal
 			if m.isAgentBusy() {
 				m.todoIsSpinning = true
 				cmds = append(cmds, m.todoSpinner.Tick)
@@ -589,6 +603,22 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case closeDialogMsg:
 		m.dialog.CloseFrontDialog()
 
+	case pubsub.Event[goal.Goal]:
+		if m.session != nil && msg.Payload.ScopeID == m.session.ID {
+			prevHasInProgress := hasInProgressGoal(m.currentGoal)
+			if msg.Type == pubsub.DeletedEvent {
+				m.currentGoal = nil
+			} else {
+				m.currentGoal = &msg.Payload
+			}
+			if !prevHasInProgress && hasInProgressGoal(m.currentGoal) {
+				if m.isAgentBusy() {
+					m.todoIsSpinning = true
+					cmds = append(cmds, m.todoSpinner.Tick)
+				}
+			}
+			m.updateLayoutAndSize()
+		}
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.DeletedEvent {
 			if m.session != nil && m.session.ID == msg.Payload.ID {
@@ -599,9 +629,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if m.session != nil && msg.Payload.ID == m.session.ID {
-			prevHasInProgress := hasInProgressTodo(m.session.Todos)
+			prevHasInProgress := hasInProgressTodo(m.session.Todos) || hasInProgressGoal(m.currentGoal)
 			m.session = &msg.Payload
-			if !prevHasInProgress && hasInProgressTodo(m.session.Todos) {
+			if !prevHasInProgress && (hasInProgressTodo(m.session.Todos) || hasInProgressGoal(m.currentGoal)) {
 				m.todoIsSpinning = true
 				cmds = append(cmds, m.todoSpinner.Tick)
 				m.updateLayoutAndSize()
@@ -628,7 +658,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chat.RemoveMessage(msg.Payload.ID)
 		}
 		// start the spinner if there is a new message
-		if hasInProgressTodo(m.session.Todos) && m.isAgentBusy() && !m.todoIsSpinning {
+		if (hasInProgressTodo(m.session.Todos) || hasInProgressGoal(m.currentGoal)) && m.isAgentBusy() && !m.todoIsSpinning {
 			m.todoIsSpinning = true
 			cmds = append(cmds, m.todoSpinner.Tick)
 		}
@@ -1886,6 +1916,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					return m.openQuitDialog()
 				}
 
+				if cmd := m.handleSlashGoal(value); cmd != nil {
+					return cmd
+				}
+
 				attachments := m.attachments.List()
 				m.attachments.Reset()
 				if len(value) == 0 && !message.ContainsTextAttachment(attachments) {
@@ -2110,6 +2144,7 @@ func (m *UI) drawHeader(scr uv.Screen, area uv.Rectangle) {
 		m.detailsOpen,
 		area.Dx(),
 		m.hyperCredits,
+		m.currentGoal,
 	)
 }
 
@@ -3183,6 +3218,125 @@ func cancelTimerCmd() tea.Cmd {
 // cancelAgent handles the cancel key press. The first press sets isCanceling to true
 // and starts a timer. The second press (before the timer expires) actually
 // cancels the agent.
+func (m *UI) handleSlashGoal(value string) tea.Cmd {
+	if !strings.HasPrefix(value, "/goal") {
+		return nil
+	}
+
+	parts := strings.Fields(value)
+	if len(parts) == 1 {
+		// Just /goal, show status
+		return func() tea.Msg {
+			if !m.hasSession() {
+				return util.ReportWarn("Start a session first to see goal status.")
+			}
+			g, err := m.com.Workspace.GoalGet(context.Background(), m.session.ID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			if g == nil {
+				return util.NewInfoMsg("No active goal for this session.")
+			}
+			return pubsub.Event[goal.Goal]{
+				Type:    pubsub.UpdatedEvent,
+				Payload: *g,
+			}
+		}
+	}
+
+	subcommand := parts[1]
+	switch subcommand {
+	case "pause":
+		return func() tea.Msg {
+			if !m.hasSession() {
+				return util.ReportWarn("Start a session first.")
+			}
+			g, err := m.com.Workspace.GoalPause(context.Background(), m.session.ID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			// Trigger continuation immediately.
+			if rt := m.com.Workspace.GoalRuntime(); rt != nil {
+				go func() {
+					_ = rt.MaybeContinue(context.Background(), m.session.ID)
+				}()
+			}
+			return pubsub.Event[goal.Goal]{
+				Type:    pubsub.UpdatedEvent,
+				Payload: *g,
+			}
+		}
+	case "resume":
+		return func() tea.Msg {
+			if !m.hasSession() {
+				return util.ReportWarn("Start a session first.")
+			}
+			g, err := m.com.Workspace.GoalResume(context.Background(), m.session.ID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			// Trigger continuation immediately.
+			if rt := m.com.Workspace.GoalRuntime(); rt != nil {
+				go func() {
+					_ = rt.MaybeContinue(context.Background(), m.session.ID)
+				}()
+			}
+			return pubsub.Event[goal.Goal]{
+				Type:    pubsub.UpdatedEvent,
+				Payload: *g,
+			}
+		}
+	case "clear":
+		return func() tea.Msg {
+			if !m.hasSession() {
+				return util.ReportWarn("Start a session first.")
+			}
+			g, err := m.com.Workspace.GoalGet(context.Background(), m.session.ID)
+			if err != nil || g == nil {
+				return nil
+			}
+			err = m.com.Workspace.GoalClear(context.Background(), m.session.ID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			return pubsub.Event[goal.Goal]{
+				Type:    pubsub.DeletedEvent,
+				Payload: *g,
+			}
+		}
+	default:
+		// Assume it's a new objective if it doesn't match a subcommand
+		// Or if it's "set" or "edit", we can handle those explicitly or just treat everything else as objective.
+		objective := strings.TrimSpace(strings.TrimPrefix(value, "/goal"))
+		// If it starts with "set" or "edit", strip that too
+		objective = strings.TrimSpace(strings.TrimPrefix(objective, "set"))
+		objective = strings.TrimSpace(strings.TrimPrefix(objective, "edit"))
+
+		if objective == "" {
+			return util.ReportWarn("Please provide an objective for the goal.")
+		}
+
+		return func() tea.Msg {
+			if !m.hasSession() {
+				// Create session if not exists
+				newSession, err := m.com.Workspace.CreateSession(context.Background(), "New Session")
+				if err != nil {
+					return util.ReportError(err)()
+				}
+				m.session = &newSession
+			}
+			g, err := m.com.Workspace.GoalSet(context.Background(), m.session.ID, objective)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			return pubsub.Event[goal.Goal]{
+				Type:    pubsub.UpdatedEvent,
+				Payload: *g,
+			}
+		}
+	}
+}
+
 func (m *UI) cancelAgent() tea.Cmd {
 	if !m.hasSession() {
 		return nil
@@ -3398,6 +3552,7 @@ func (m *UI) handlePermissionNotification(notification permission.PermissionNoti
 func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 	switch n.Type {
 	case notify.TypeAgentFinished:
+		m.randomizePlaceholders()
 		var cmds []tea.Cmd
 		cmds = append(cmds, m.sendNotification(notification.Notification{
 			Title:   "Crush is waiting...",
@@ -3409,6 +3564,9 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 		return tea.Batch(cmds...)
 	case notify.TypeReAuthenticate:
 		return m.handleReAuthenticate(n.ProviderID)
+	case notify.TypeGoalContinue:
+		m.workingPlaceholder = "Continuing goal..."
+		return nil
 	default:
 		return nil
 	}

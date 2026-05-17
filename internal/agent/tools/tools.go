@@ -28,6 +28,7 @@ const (
 	ModelNameContextKey modelNameKey = "model_name"
 )
 
+
 // getContextValue is a generic helper that retrieves a typed value from context.
 // If the value is not found or has the wrong type, it returns the default value.
 func getContextValue[T any](ctx context.Context, key any, defaultValue T) T {

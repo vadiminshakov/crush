@@ -309,6 +309,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 			}
 
+			// Propagate goal ID if present in the caller context.
+			if goalID, ok := ctx.Value("goal_id").(string); ok {
+				callContext = context.WithValue(callContext, "goal_id", goalID)
+			}
+
 			var assistantMsg message.Message
 			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
 				Role:     message.Assistant,
