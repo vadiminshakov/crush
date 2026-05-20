@@ -173,16 +173,16 @@ func (w *AppWorkspace) GetDefaultSmallModel(providerID string) config.SelectedMo
 
 // -- Permissions --
 
-func (w *AppWorkspace) PermissionGrant(perm permission.PermissionRequest) {
-	w.app.Permissions.Grant(perm)
+func (w *AppWorkspace) PermissionGrant(perm permission.PermissionRequest) bool {
+	return w.app.Permissions.Grant(perm)
 }
 
-func (w *AppWorkspace) PermissionGrantPersistent(perm permission.PermissionRequest) {
-	w.app.Permissions.GrantPersistent(perm)
+func (w *AppWorkspace) PermissionGrantPersistent(perm permission.PermissionRequest) bool {
+	return w.app.Permissions.GrantPersistent(perm)
 }
 
-func (w *AppWorkspace) PermissionDeny(perm permission.PermissionRequest) {
-	w.app.Permissions.Deny(perm)
+func (w *AppWorkspace) PermissionDeny(perm permission.PermissionRequest) bool {
+	return w.app.Permissions.Deny(perm)
 }
 
 func (w *AppWorkspace) PermissionSkipRequests() bool {

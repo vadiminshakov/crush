@@ -490,17 +490,25 @@ func (c *Client) ListSessions(ctx context.Context, id string) ([]proto.Session, 
 	return sessions, nil
 }
 
-// GrantPermission grants a permission on a workspace.
-func (c *Client) GrantPermission(ctx context.Context, id string, req proto.PermissionGrant) error {
+// GrantPermission grants a permission on a workspace. The returned
+// bool reports whether this call resolved the pending request (true)
+// or found it already resolved by a previous caller (false). A false
+// value is not an error — it just means another subscriber resolved
+// the same request first.
+func (c *Client) GrantPermission(ctx context.Context, id string, req proto.PermissionGrant) (bool, error) {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/permissions/grant", id), nil, jsonBody(req), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
-		return fmt.Errorf("failed to grant permission: %w", err)
+		return false, fmt.Errorf("failed to grant permission: %w", err)
 	}
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to grant permission: status code %d", rsp.StatusCode)
+		return false, fmt.Errorf("failed to grant permission: status code %d", rsp.StatusCode)
 	}
-	return nil
+	var resp proto.PermissionGrantResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&resp); err != nil {
+		return false, fmt.Errorf("failed to decode grant permission response: %w", err)
+	}
+	return resp.Resolved, nil
 }
 
 // SetPermissionsSkipRequests sets the skip-requests flag for a workspace.

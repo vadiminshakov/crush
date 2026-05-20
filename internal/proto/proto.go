@@ -86,6 +86,15 @@ type PermissionGrant struct {
 	Action     PermissionAction  `json:"action"`
 }
 
+// PermissionGrantResponse is the server's response to a permission
+// grant call. Resolved is true when this call resolved the pending
+// request, and false when the request had already been resolved by a
+// previous caller (e.g., another client in a multi-subscriber UI). A
+// false value is not an error.
+type PermissionGrantResponse struct {
+	Resolved bool `json:"resolved"`
+}
+
 // PermissionSkipRequest represents a request to skip permission prompts.
 type PermissionSkipRequest struct {
 	Skip bool `json:"skip"`

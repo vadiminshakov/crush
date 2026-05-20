@@ -89,9 +89,17 @@ type Workspace interface {
 	GetDefaultSmallModel(providerID string) config.SelectedModel
 
 	// Permissions
-	PermissionGrant(perm permission.PermissionRequest)
-	PermissionGrantPersistent(perm permission.PermissionRequest)
-	PermissionDeny(perm permission.PermissionRequest)
+	//
+	// PermissionGrant, PermissionGrantPersistent, and PermissionDeny
+	// return true if the call resolved the pending request and false if
+	// it had already been resolved by another subscriber (or is no
+	// longer pending). A false return is not an error; the modal can
+	// still close locally because the resolution will arrive via the
+	// PermissionNotification event stream regardless of which client
+	// won the race.
+	PermissionGrant(perm permission.PermissionRequest) bool
+	PermissionGrantPersistent(perm permission.PermissionRequest) bool
+	PermissionDeny(perm permission.PermissionRequest) bool
 	PermissionSkipRequests() bool
 	PermissionSetSkipRequests(skip bool)
 
