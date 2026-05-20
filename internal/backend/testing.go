@@ -38,3 +38,18 @@ func RegisterClientForTesting(b *Backend, ws *Workspace, clientID string) error 
 func SetWorkspaceShutdownFnForTest(ws *Workspace, fn func()) {
 	ws.shutdownFn = fn
 }
+
+// WorkspaceLiveStreamCountForTest returns the number of clients on ws
+// that have at least one live SSE stream. Used by integration tests
+// in other packages to wait for SSE attaches before publishing events.
+func WorkspaceLiveStreamCountForTest(ws *Workspace) int {
+	ws.clientsMu.Lock()
+	defer ws.clientsMu.Unlock()
+	n := 0
+	for _, cs := range ws.clients {
+		if cs.streams > 0 {
+			n++
+		}
+	}
+	return n
+}

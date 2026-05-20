@@ -100,7 +100,18 @@ func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 			}
 		}()
 	})
+	s.installHandler()
+	if network == "tcp" {
+		s.h.Addr = address
+	}
+	return s
+}
 
+// installHandler builds the protocol/router around s.backend and
+// assigns the resulting http.Server to s.h. Extracted from
+// [NewServer] so test harnesses can wire a Server around a
+// pre-constructed backend.
+func (s *Server) installHandler() {
 	var p http.Protocols
 	p.SetHTTP1(true)
 	p.SetUnencryptedHTTP2(true)
@@ -171,10 +182,6 @@ func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 		Protocols: &p,
 		Handler:   s.recoverHandler(s.loggingHandler(mux)),
 	}
-	if network == "tcp" {
-		s.h.Addr = address
-	}
-	return s
 }
 
 // Handler returns the server's HTTP handler. Exposed so test harnesses
