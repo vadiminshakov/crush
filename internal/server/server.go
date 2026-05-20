@@ -176,6 +176,13 @@ func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 	return s
 }
 
+// Handler returns the server's HTTP handler. Exposed so test harnesses
+// can wrap it in an httptest.Server without going through the
+// production listener setup.
+func (s *Server) Handler() http.Handler {
+	return s.h.Handler
+}
+
 // Serve accepts incoming connections on the listener.
 func (s *Server) Serve(ln net.Listener) error {
 	return s.h.Serve(ln)

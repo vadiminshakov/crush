@@ -242,6 +242,12 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Flush headers immediately so clients see the 200 response
+	// before any events arrive. Without this, a quiet workspace
+	// keeps the client's SubscribeEvents call blocked on the
+	// initial RoundTrip.
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 
 	for {
 		select {

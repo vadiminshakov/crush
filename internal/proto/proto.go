@@ -29,6 +29,13 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+// ConfigChanged is published whenever the workspace's configuration is
+// mutated by a backend operation. Clients react by re-fetching the
+// workspace snapshot so cached config stays in sync across subscribers.
+type ConfigChanged struct {
+	WorkspaceID string `json:"workspace_id"`
+}
+
 // AgentInfo represents information about the agent.
 type AgentInfo struct {
 	IsBusy   bool                 `json:"is_busy"`
