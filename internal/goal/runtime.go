@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"fmt"
 	"log/slog"
 	"text/template"
 
@@ -68,7 +69,10 @@ func (r *Runtime) MaybeContinue(ctx context.Context, scopeID string) error {
 		return nil
 	}
 
-	prompt := r.RenderContinuationPrompt(goal)
+	prompt, err := r.RenderContinuationPrompt(goal)
+	if err != nil {
+		return fmt.Errorf("rendering continuation prompt: %w", err)
+	}
 
 	slog.Info("Starting synthetic continuation turn", "session_id", scopeID, "goal_id", goal.GoalID)
 
@@ -86,10 +90,10 @@ func (r *Runtime) MaybeContinue(ctx context.Context, scopeID string) error {
 	return err
 }
 
-func (r *Runtime) RenderContinuationPrompt(g *Goal) string {
+func (r *Runtime) RenderContinuationPrompt(g *Goal) (string, error) {
 	var buf bytes.Buffer
 	if err := continuationTpl.Execute(&buf, g); err != nil {
-		panic(err)
+		return "", err
 	}
-	return buf.String()
+	return buf.String(), nil
 }

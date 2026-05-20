@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -192,7 +193,9 @@ func (w *AppWorkspace) GoalSet(ctx context.Context, sessionID, objective string)
 		return nil, err
 	}
 	go func() {
-		_ = w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID)
+		if err := w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID); err != nil {
+			slog.Error("Goal continuation failed after set", "session_id", sessionID, "error", err)
+		}
 	}()
 	return g, nil
 }
@@ -215,14 +218,18 @@ func (w *AppWorkspace) GoalResume(ctx context.Context, sessionID string) (*goal.
 		return nil, err
 	}
 	go func() {
-		_ = w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID)
+		if err := w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID); err != nil {
+			slog.Error("Goal continuation failed after resume", "session_id", sessionID, "error", err)
+		}
 	}()
 	return updated, nil
 }
 
 func (w *AppWorkspace) GoalStart(ctx context.Context, sessionID string) error {
 	go func() {
-		_ = w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID)
+		if err := w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID); err != nil {
+			slog.Error("Goal continuation failed on start", "session_id", sessionID, "error", err)
+		}
 	}()
 	return nil
 }

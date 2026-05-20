@@ -70,20 +70,31 @@ func (s *service) Get(ctx context.Context, scopeID string) (*Goal, error) {
 }
 
 func (s *service) Create(ctx context.Context, scopeID string, objective string) (*Goal, error) {
-	existing, err := s.Get(ctx, scopeID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
-	if existing != nil && existing.Status != GoalComplete {
-		return nil, fmt.Errorf("session already has an active goal")
+	defer tx.Rollback() //nolint:errcheck
+
+	qtx := s.q.WithTx(tx)
+
+	existing, err := qtx.GetGoalBySessionID(ctx, scopeID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("getting goal: %w", err)
 	}
-	if existing != nil {
-		if err = s.q.DeleteGoal(ctx, scopeID); err != nil {
+
+	if err == nil {
+		existingGoal := s.fromDBItem(existing)
+		if existingGoal.Status != GoalComplete {
+			return nil, fmt.Errorf("session already has an active goal")
+		}
+		if err = qtx.DeleteGoal(ctx, scopeID); err != nil {
 			return nil, fmt.Errorf("clearing completed goal: %w", err)
 		}
 	}
+
 	goalID := uuid.New().String()
-	dbGoal, err := s.q.CreateGoal(ctx, db.CreateGoalParams{
+	dbGoal, err := qtx.CreateGoal(ctx, db.CreateGoalParams{
 		SessionID: scopeID,
 		GoalID:    goalID,
 		Objective: objective,
@@ -92,18 +103,31 @@ func (s *service) Create(ctx context.Context, scopeID string, objective string) 
 	if err != nil {
 		return nil, fmt.Errorf("creating goal: %w", err)
 	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
 	goal := s.fromDBItem(dbGoal)
 	s.Publish(pubsub.UpdatedEvent, *goal)
 	return goal, nil
 }
 
 func (s *service) UpdateStatus(ctx context.Context, scopeID string, goalID string, status GoalStatus) (*Goal, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	qtx := s.q.WithTx(tx)
+
 	if status != GoalActive {
-		if err := s.q.AccumulateActiveTime(ctx, scopeID); err != nil {
+		if err := qtx.AccumulateActiveTime(ctx, scopeID); err != nil {
 			return nil, fmt.Errorf("accumulating active time: %w", err)
 		}
 	}
-	dbGoal, err := s.q.UpdateGoalStatus(ctx, db.UpdateGoalStatusParams{
+	dbGoal, err := qtx.UpdateGoalStatus(ctx, db.UpdateGoalStatusParams{
 		SessionID: scopeID,
 		GoalID:    goalID,
 		Status:    string(status),
@@ -114,6 +138,11 @@ func (s *service) UpdateStatus(ctx context.Context, scopeID string, goalID strin
 		}
 		return nil, fmt.Errorf("updating goal status: %w", err)
 	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
 	goal := s.fromDBItem(dbGoal)
 	s.Publish(pubsub.UpdatedEvent, *goal)
 	return goal, nil
