@@ -365,6 +365,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	ui.randomizePlaceholders()
 	ui.textarea.Placeholder = ui.readyPlaceholder
 	ui.status = status
+	ui.status.SetMode(ui.mode == uiInputModePlan)
 
 	// Initialize compact mode from config
 	ui.forceCompactMode = com.Config().Options.TUI.CompactMode
@@ -1423,6 +1424,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		yolo := !m.com.Workspace.PermissionSkipRequests()
 		m.com.Workspace.PermissionSetSkipRequests(yolo)
 		m.setEditorPrompt(yolo, m.mode)
+		m.status.SetMode(m.mode == uiInputModePlan)
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
@@ -2966,18 +2968,10 @@ func (m *UI) openEditor(value string) tea.Cmd {
 }
 
 // setEditorPrompt configures the textarea prompt function based on whether
-// yolo mode is enabled.
-func (m *UI) setEditorPrompt(yolo bool, mode uiInputMode) {
-	if yolo && mode == uiInputModePlan {
-		m.textarea.SetPromptFunc(4, m.yoloPlanPromptFunc)
-		return
-	}
+// yolo mode is enabled. Mode indicators are shown in the status bar instead.
+func (m *UI) setEditorPrompt(yolo bool, _ uiInputMode) {
 	if yolo {
 		m.textarea.SetPromptFunc(4, m.yoloPromptFunc)
-		return
-	}
-	if mode == uiInputModePlan {
-		m.textarea.SetPromptFunc(4, m.planPromptFunc)
 		return
 	}
 	m.textarea.SetPromptFunc(4, m.normalPromptFunc)
@@ -2997,34 +2991,6 @@ func (m *UI) normalPromptFunc(info textarea.PromptInfo) string {
 		return t.Editor.PromptNormalFocused.Render()
 	}
 	return t.Editor.PromptNormalBlurred.Render()
-}
-
-func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
-	t := m.com.Styles
-	if info.LineNumber == 0 {
-		if info.Focused {
-			return "[plan] > "
-		}
-		return "[plan]:: "
-	}
-	if info.Focused {
-		return t.Editor.PromptNormalFocused.Render()
-	}
-	return t.Editor.PromptNormalBlurred.Render()
-}
-
-func (m *UI) yoloPlanPromptFunc(info textarea.PromptInfo) string {
-	t := m.com.Styles
-	if info.LineNumber == 0 {
-		if info.Focused {
-			return t.Editor.PromptYoloIconFocused.Render() + "[plan] > "
-		}
-		return t.Editor.PromptYoloIconBlurred.Render() + "[plan]:: "
-	}
-	if info.Focused {
-		return t.Editor.PromptYoloDotsFocused.Render()
-	}
-	return t.Editor.PromptYoloDotsBlurred.Render()
 }
 
 // yoloPromptFunc returns the yolo mode editor prompt style with warning icon
@@ -3061,6 +3027,7 @@ func (m *UI) toggleInputMode() tea.Cmd {
 
 		m.mode = targetMode
 		m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests(), m.mode)
+		m.status.SetMode(m.mode == uiInputModePlan)
 		if err := m.com.Workspace.UpdateAgentModel(context.Background()); err != nil {
 			return util.ReportError(err)()
 		}

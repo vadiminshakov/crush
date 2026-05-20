@@ -480,7 +480,8 @@ type Styles struct {
 
 	// Status bar and help
 	Status struct {
-		Help lipgloss.Style
+		Help      lipgloss.Style
+		PlanBadge lipgloss.Style
 
 		ErrorIndicator   lipgloss.Style
 		WarnIndicator    lipgloss.Style
