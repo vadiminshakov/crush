@@ -156,6 +156,17 @@ func isSessionBusy(ws *backend.Workspace, sessionID string) bool {
 	return ws.AgentCoordinator.IsSessionBusy(sessionID)
 }
 
+// attachedClients returns the number of clients currently viewing
+// sessionID in ws. Hold-only clients (streams == 0) do not contribute.
+// A nil workspace is treated as zero so handlers can pass GetWorkspace's
+// result through without an extra guard.
+func attachedClients(ws *backend.Workspace, sessionID string) int {
+	if ws == nil {
+		return 0
+	}
+	return ws.AttachedClientsForSession(sessionID)
+}
+
 func todosToProto(todos []session.Todo) []proto.Todo {
 	if len(todos) == 0 {
 		return nil

@@ -1132,3 +1132,91 @@ func TestSetCurrentSession_RaceWithDetach(t *testing.T) {
 	require.Contains(t, ws.clients, cidB, "remaining client must still be present")
 	require.Equal(t, "SB", ws.clients[cidB].currentSessionID, "remaining client must keep its last set session")
 }
+
+// TestAttachedClients_BasicLifecycle walks one session's count through
+// attach -> set -> second client joins -> switch -> detach. It also
+// confirms hold-only and unselected clients do not contribute.
+func TestAttachedClients_BasicLifecycle(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	// Keep the grace window long so the hold-only client survives.
+	b.createGrace = time.Hour
+	ws, _ := insertTestWorkspace(t, b, "/tmp/attached-clients-basic")
+
+	// No clients yet.
+	n, err := b.AttachedClients(ws.ID, "S1")
+	require.NoError(t, err)
+	require.Zero(t, n)
+
+	// Attach A, set to S1. Count for S1 is 1; count for S2 is 0.
+	cidA := newClientID(t)
+	require.NoError(t, b.AttachClient(ws.ID, cidA))
+	require.NoError(t, b.SetCurrentSession(ws.ID, cidA, "S1"))
+
+	n, err = b.AttachedClients(ws.ID, "S1")
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	n, err = b.AttachedClients(ws.ID, "S2")
+	require.NoError(t, err)
+	require.Zero(t, n)
+
+	// Attach B, set to S1. Count for S1 is 2.
+	cidB := newClientID(t)
+	require.NoError(t, b.AttachClient(ws.ID, cidB))
+	require.NoError(t, b.SetCurrentSession(ws.ID, cidB, "S1"))
+
+	n, _ = b.AttachedClients(ws.ID, "S1")
+	require.Equal(t, 2, n)
+
+	// B switches to S2; counts redistribute.
+	require.NoError(t, b.SetCurrentSession(ws.ID, cidB, "S2"))
+	n, _ = b.AttachedClients(ws.ID, "S1")
+	require.Equal(t, 1, n)
+	n, _ = b.AttachedClients(ws.ID, "S2")
+	require.Equal(t, 1, n)
+
+	// A hold-only client must NOT be counted, even if we were able to
+	// imagine a currentSessionID on it. registerClient leaves
+	// currentSessionID empty by construction, and SetCurrentSession
+	// rejects hold-only writers — so the contract holds two ways.
+	cidHold := newClientID(t)
+	b.registerClient(ws, cidHold)
+	t.Cleanup(func() { _ = b.releaseHold(ws.ID, cidHold) })
+	n, _ = b.AttachedClients(ws.ID, "S1")
+	require.Equal(t, 1, n, "hold-only client must not contribute")
+	n, _ = b.AttachedClients(ws.ID, "")
+	require.Equal(t, 0, n,
+		"empty sessionID must not match the hold-only entry (streams==0)")
+
+	// A client with streams > 0 but currentSessionID == "" is NOT
+	// counted toward any non-empty session, and is matched only
+	// against the empty session id (which represents the landing
+	// screen).
+	cidC := newClientID(t)
+	require.NoError(t, b.AttachClient(ws.ID, cidC))
+	n, _ = b.AttachedClients(ws.ID, "S1")
+	require.Equal(t, 1, n, "stream-only client with empty currentSessionID must not be counted toward S1")
+	n, _ = b.AttachedClients(ws.ID, "")
+	require.Equal(t, 1, n, "stream-only client with empty currentSessionID matches the empty session id")
+
+	// B detaches: count for S2 drops to 0.
+	b.DetachClient(ws.ID, cidB)
+	n, _ = b.AttachedClients(ws.ID, "S2")
+	require.Zero(t, n)
+	n, _ = b.AttachedClients(ws.ID, "S1")
+	require.Equal(t, 1, n, "A still on S1")
+
+	// Final cleanup.
+	b.DetachClient(ws.ID, cidA)
+	b.DetachClient(ws.ID, cidC)
+}
+
+// TestAttachedClients_UnknownWorkspace verifies the error surface.
+func TestAttachedClients_UnknownWorkspace(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	_, err := b.AttachedClients("00000000-0000-0000-0000-000000000000", "S1")
+	require.ErrorIs(t, err, ErrWorkspaceNotFound)
+}

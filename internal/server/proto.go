@@ -381,6 +381,7 @@ func (c *controllerV1) handleGetWorkspaceSessions(w http.ResponseWriter, r *http
 	for i, s := range sessions {
 		result[i] = sessionToProto(s)
 		result[i].IsBusy = isSessionBusy(ws, s.ID)
+		result[i].AttachedClients = attachedClients(ws, s.ID)
 	}
 	jsonEncode(w, result)
 }
@@ -416,6 +417,7 @@ func (c *controllerV1) handlePostWorkspaceSessions(w http.ResponseWriter, r *htt
 	ws, _ := c.backend.GetWorkspace(id)
 	out := sessionToProto(sess)
 	out.IsBusy = isSessionBusy(ws, sess.ID)
+	out.AttachedClients = attachedClients(ws, sess.ID)
 	jsonEncode(w, out)
 }
 
@@ -441,6 +443,7 @@ func (c *controllerV1) handleGetWorkspaceSession(w http.ResponseWriter, r *http.
 	ws, _ := c.backend.GetWorkspace(id)
 	out := sessionToProto(sess)
 	out.IsBusy = isSessionBusy(ws, sess.ID)
+	out.AttachedClients = attachedClients(ws, sess.ID)
 	jsonEncode(w, out)
 }
 
@@ -520,6 +523,7 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 	ws, _ := c.backend.GetWorkspace(id)
 	out := sessionToProto(saved)
 	out.IsBusy = isSessionBusy(ws, saved.ID)
+	out.AttachedClients = attachedClients(ws, saved.ID)
 	jsonEncode(w, out)
 }
 

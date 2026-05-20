@@ -507,6 +507,36 @@ func (b *Backend) SetCurrentSession(workspaceID, clientID, sessionID string) err
 	return nil
 }
 
+// AttachedClients returns the number of clients currently viewing
+// sessionID in the given workspace. Only clients with at least one live
+// SSE stream (streams > 0) AND a matching currentSessionID are counted;
+// pure creation holds do not contribute. Returns [ErrWorkspaceNotFound]
+// if the workspace is unknown.
+func (b *Backend) AttachedClients(workspaceID, sessionID string) (int, error) {
+	ws, ok := b.workspaces.Get(workspaceID)
+	if !ok {
+		return 0, ErrWorkspaceNotFound
+	}
+	return ws.AttachedClientsForSession(sessionID), nil
+}
+
+// AttachedClientsForSession returns the number of clients in this
+// workspace whose currentSessionID equals sessionID and which have at
+// least one live SSE stream. Hold-only clients (streams == 0) do not
+// contribute. Acquires the workspace's [clientsMu] briefly; the
+// returned count is a point-in-time snapshot.
+func (w *Workspace) AttachedClientsForSession(sessionID string) int {
+	w.clientsMu.Lock()
+	defer w.clientsMu.Unlock()
+	n := 0
+	for _, cs := range w.clients {
+		if cs.streams > 0 && cs.currentSessionID == sessionID {
+			n++
+		}
+	}
+	return n
+}
+
 // GetWorkspaceProto returns the proto representation of a workspace.
 func (b *Backend) GetWorkspaceProto(id string) (proto.Workspace, error) {
 	ws, err := b.GetWorkspace(id)
