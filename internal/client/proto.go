@@ -39,6 +39,7 @@ func (c *Client) ListWorkspaces(ctx context.Context) ([]proto.Workspace, error) 
 
 // CreateWorkspace creates a new workspace on the server.
 func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*proto.Workspace, error) {
+	ws.ClientID = c.clientID
 	rsp, err := c.post(ctx, "/workspaces", nil, jsonBody(ws), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
@@ -73,7 +74,8 @@ func (c *Client) GetWorkspace(ctx context.Context, id string) (*proto.Workspace,
 
 // DeleteWorkspace deletes a workspace on the server.
 func (c *Client) DeleteWorkspace(ctx context.Context, id string) error {
-	rsp, err := c.delete(ctx, fmt.Sprintf("/workspaces/%s", id), nil, nil)
+	q := url.Values{"client_id": []string{c.clientID}}
+	rsp, err := c.delete(ctx, fmt.Sprintf("/workspaces/%s", id), q, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete workspace: %w", err)
 	}
@@ -87,8 +89,9 @@ func (c *Client) DeleteWorkspace(ctx context.Context, id string) error {
 // SubscribeEvents subscribes to server-sent events for a workspace.
 func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, error) {
 	events := make(chan any, 100)
+	q := url.Values{"client_id": []string{c.clientID}}
 	//nolint:bodyclose
-	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/events", id), nil, http.Header{
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/events", id), q, http.Header{
 		"Accept":        []string{"text/event-stream"},
 		"Cache-Control": []string{"no-cache"},
 		"Connection":    []string{"keep-alive"},
