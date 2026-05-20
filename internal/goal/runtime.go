@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/session"
 )
 
 //go:embed continuation_prompt.md.tpl
@@ -29,18 +28,16 @@ type AgentRunner interface {
 }
 
 type Runtime struct {
-	store    Service
-	sessions session.Service
-	agent    AgentRunner
-	notify   pubsub.Publisher[notify.Notification]
+	store  Service
+	agent  AgentRunner
+	notify pubsub.Publisher[notify.Notification]
 }
 
-func NewRuntime(store Service, sessions session.Service, agent AgentRunner, notify pubsub.Publisher[notify.Notification]) *Runtime {
+func NewRuntime(store Service, agent AgentRunner, notify pubsub.Publisher[notify.Notification]) *Runtime {
 	return &Runtime{
-		store:    store,
-		sessions: sessions,
-		agent:    agent,
-		notify:   notify,
+		store:  store,
+		agent:  agent,
+		notify: notify,
 	}
 }
 

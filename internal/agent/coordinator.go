@@ -162,7 +162,7 @@ func NewCoordinator(
 		activeSkills: activeSkills,
 		skillTracker: skillTracker,
 	}
-	c.goalRuntime = goal.NewRuntime(goalService, sessions, c, notify)
+	c.goalRuntime = goal.NewRuntime(goalService, c, notify)
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
 	if !ok {
