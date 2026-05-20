@@ -37,10 +37,10 @@ type Goal struct {
 
 type Service interface {
 	pubsub.Subscriber[Goal]
-	Get(ctx context.Context, scopeID string) (*Goal, error)
-	Create(ctx context.Context, scopeID string, objective string) (*Goal, error)
-	UpdateStatus(ctx context.Context, scopeID string, goalID string, status GoalStatus) (*Goal, error)
-	Clear(ctx context.Context, scopeID string) (*Goal, error)
+	Get(ctx context.Context, sessionID string) (*Goal, error)
+	Create(ctx context.Context, sessionID string, objective string) (*Goal, error)
+	UpdateStatus(ctx context.Context, sessionID string, goalID string, status GoalStatus) (*Goal, error)
+	Clear(ctx context.Context, sessionID string) (*Goal, error)
 }
 
 type service struct {
@@ -58,8 +58,8 @@ func NewService(q *db.Queries, conn *sql.DB) Service {
 	}
 }
 
-func (s *service) Get(ctx context.Context, scopeID string) (*Goal, error) {
-	dbGoal, err := s.q.GetGoalBySessionID(ctx, scopeID)
+func (s *service) Get(ctx context.Context, sessionID string) (*Goal, error) {
+	dbGoal, err := s.q.GetGoalBySessionID(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -69,7 +69,7 @@ func (s *service) Get(ctx context.Context, scopeID string) (*Goal, error) {
 	return s.fromDBItem(dbGoal), nil
 }
 
-func (s *service) Create(ctx context.Context, scopeID string, objective string) (*Goal, error) {
+func (s *service) Create(ctx context.Context, sessionID string, objective string) (*Goal, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
@@ -78,7 +78,7 @@ func (s *service) Create(ctx context.Context, scopeID string, objective string) 
 
 	qtx := s.q.WithTx(tx)
 
-	existing, err := qtx.GetGoalBySessionID(ctx, scopeID)
+	existing, err := qtx.GetGoalBySessionID(ctx, sessionID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("getting goal: %w", err)
 	}
@@ -88,14 +88,14 @@ func (s *service) Create(ctx context.Context, scopeID string, objective string) 
 		if existingGoal.Status != GoalComplete {
 			return nil, fmt.Errorf("session already has an active goal")
 		}
-		if err = qtx.DeleteGoal(ctx, scopeID); err != nil {
+		if err = qtx.DeleteGoal(ctx, sessionID); err != nil {
 			return nil, fmt.Errorf("clearing completed goal: %w", err)
 		}
 	}
 
 	goalID := uuid.New().String()
 	dbGoal, err := qtx.CreateGoal(ctx, db.CreateGoalParams{
-		SessionID: scopeID,
+		SessionID: sessionID,
 		GoalID:    goalID,
 		Objective: objective,
 		Status:    string(GoalActive),
@@ -113,7 +113,7 @@ func (s *service) Create(ctx context.Context, scopeID string, objective string) 
 	return goal, nil
 }
 
-func (s *service) UpdateStatus(ctx context.Context, scopeID string, goalID string, status GoalStatus) (*Goal, error) {
+func (s *service) UpdateStatus(ctx context.Context, sessionID string, goalID string, status GoalStatus) (*Goal, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
@@ -123,12 +123,12 @@ func (s *service) UpdateStatus(ctx context.Context, scopeID string, goalID strin
 	qtx := s.q.WithTx(tx)
 
 	if status != GoalActive {
-		if err := qtx.AccumulateActiveTime(ctx, scopeID); err != nil {
+		if err := qtx.AccumulateActiveTime(ctx, sessionID); err != nil {
 			return nil, fmt.Errorf("accumulating active time: %w", err)
 		}
 	}
 	dbGoal, err := qtx.UpdateGoalStatus(ctx, db.UpdateGoalStatusParams{
-		SessionID: scopeID,
+		SessionID: sessionID,
 		GoalID:    goalID,
 		Status:    string(status),
 	})
@@ -148,15 +148,15 @@ func (s *service) UpdateStatus(ctx context.Context, scopeID string, goalID strin
 	return goal, nil
 }
 
-func (s *service) Clear(ctx context.Context, scopeID string) (*Goal, error) {
-	goal, err := s.Get(ctx, scopeID)
+func (s *service) Clear(ctx context.Context, sessionID string) (*Goal, error) {
+	goal, err := s.Get(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	if goal == nil {
 		return nil, nil
 	}
-	if err = s.q.DeleteGoal(ctx, scopeID); err != nil {
+	if err = s.q.DeleteGoal(ctx, sessionID); err != nil {
 		return nil, fmt.Errorf("deleting goal: %w", err)
 	}
 	s.Publish(pubsub.DeletedEvent, *goal)

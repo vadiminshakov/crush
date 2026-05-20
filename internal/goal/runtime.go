@@ -41,23 +41,23 @@ func NewRuntime(store Service, agent AgentRunner, notify pubsub.Publisher[notify
 	}
 }
 
-func (r *Runtime) OnTurnFinished(ctx context.Context, scopeID string) {
-	err := r.MaybeContinue(ctx, scopeID)
+func (r *Runtime) OnTurnFinished(ctx context.Context, sessionID string) {
+	err := r.MaybeContinue(ctx, sessionID)
 	if err != nil {
-		slog.Error("Goal runtime continuation failed", "session_id", scopeID, "error", err)
+		slog.Error("Goal runtime continuation failed", "session_id", sessionID, "error", err)
 	}
 }
 
-func (r *Runtime) MaybeContinue(ctx context.Context, scopeID string) error {
-	if r.agent.IsSessionBusy(scopeID) {
+func (r *Runtime) MaybeContinue(ctx context.Context, sessionID string) error {
+	if r.agent.IsSessionBusy(sessionID) {
 		return nil
 	}
 
-	if r.agent.QueuedPrompts(scopeID) > 0 {
+	if r.agent.QueuedPrompts(sessionID) > 0 {
 		return nil
 	}
 
-	goal, err := r.store.Get(ctx, scopeID)
+	goal, err := r.store.Get(ctx, sessionID)
 	if err != nil || goal == nil {
 		return err
 	}
@@ -71,11 +71,11 @@ func (r *Runtime) MaybeContinue(ctx context.Context, scopeID string) error {
 		return fmt.Errorf("rendering continuation prompt: %w", err)
 	}
 
-	slog.Info("Starting synthetic continuation turn", "session_id", scopeID, "goal_id", goal.GoalID)
+	slog.Info("Starting synthetic continuation turn", "session_id", sessionID, "goal_id", goal.GoalID)
 
 	if r.notify != nil {
 		r.notify.Publish(pubsub.CreatedEvent, notify.Notification{
-			SessionID: scopeID,
+			SessionID: sessionID,
 			Type:      notify.TypeGoalContinue,
 		})
 	}
@@ -83,7 +83,7 @@ func (r *Runtime) MaybeContinue(ctx context.Context, scopeID string) error {
 	// Inject the current GoalID into the context for stale update protection.
 	goalCtx := context.WithValue(ctx, GoalIDContextKey, goal.GoalID)
 
-	_, err = r.agent.Run(goalCtx, scopeID, prompt)
+	_, err = r.agent.Run(goalCtx, sessionID, prompt)
 	return err
 }
 
