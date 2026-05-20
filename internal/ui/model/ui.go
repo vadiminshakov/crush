@@ -417,6 +417,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	ui.randomizePlaceholders()
 	ui.textarea.Placeholder = ui.readyPlaceholder
 	ui.status = status
+	ui.status.SetMode(ui.mode == uiInputModePlan)
 
 	// Initialize compact mode from config
 	ui.forceCompactMode = com.Config().Options.TUI.CompactMode
@@ -1631,6 +1632,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		yolo := !m.com.Workspace.PermissionSkipRequests()
 		m.com.Workspace.PermissionSetSkipRequests(yolo)
 		m.setEditorPrompt(yolo, m.mode)
+		m.status.SetMode(m.mode == uiInputModePlan)
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
@@ -3365,7 +3367,6 @@ func (m *UI) setEditorPrompt(yolo bool) {
 		m.textarea.SetPromptFunc(4, m.yoloPromptFunc)
 		return
 	}
-
 	m.textarea.SetPromptFunc(4, m.normalPromptFunc)
 }
 
@@ -3435,6 +3436,7 @@ func (m *UI) toggleInputMode() tea.Cmd {
 
 		m.mode = targetMode
 		m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests(), m.mode)
+		m.status.SetMode(m.mode == uiInputModePlan)
 		if err := m.com.Workspace.UpdateAgentModel(context.Background()); err != nil {
 			return util.ReportError(err)()
 		}
