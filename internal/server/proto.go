@@ -151,6 +151,39 @@ func (c *controllerV1) requireClientID(w http.ResponseWriter, r *http.Request) (
 	return cid, true
 }
 
+// handlePostWorkspaceCurrentSession records the calling client's
+// current session selection for the workspace. An empty session_id
+// clears the entry (e.g. the client is on the landing screen).
+//
+//	@Summary		Set current session for a client
+//	@Tags			workspaces
+//	@Accept			json
+//	@Produce		json
+//	@Param			id			path	string					true	"Workspace ID"
+//	@Param			client_id	query	string					true	"Client ID (UUID)"
+//	@Param			request		body	proto.CurrentSession	true	"Current session selection"
+//	@Success		200
+//	@Failure		400	{object}	proto.Error
+//	@Failure		404	{object}	proto.Error
+//	@Router			/workspaces/{id}/current-session [post]
+func (c *controllerV1) handlePostWorkspaceCurrentSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	clientID, ok := c.requireClientID(w, r)
+	if !ok {
+		return
+	}
+	var req proto.CurrentSession
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.SetCurrentSession(id, clientID, req.SessionID); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+}
+
 // handleDeleteWorkspaces deletes a workspace.
 //
 //	@Summary		Delete workspace
@@ -1005,6 +1038,8 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		status = http.StatusBadRequest
 	case errors.Is(err, backend.ErrInvalidClientID):
 		status = http.StatusBadRequest
+	case errors.Is(err, backend.ErrClientNotAttached):
+		status = http.StatusNotFound
 	}
 	c.server.logError(r, err.Error())
 	jsonError(w, status, err.Error())

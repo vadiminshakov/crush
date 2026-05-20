@@ -951,3 +951,184 @@ func TestAttachClient_RacesWithTeardown(t *testing.T) {
 		}
 	}
 }
+
+// TestSetCurrentSession_BasicAttachAndSwitch verifies the happy path:
+// an attached client can set its current session, a second attached
+// client can target the same session, and one of them can switch to a
+// different session without disturbing the other's record.
+func TestSetCurrentSession_BasicAttachAndSwitch(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	ws, _ := insertTestWorkspace(t, b, "/tmp/current-session-basic")
+
+	cidA := newClientID(t)
+	cidB := newClientID(t)
+	require.NoError(t, b.AttachClient(ws.ID, cidA))
+	require.NoError(t, b.AttachClient(ws.ID, cidB))
+
+	require.NoError(t, b.SetCurrentSession(ws.ID, cidA, "S1"))
+	ws.clientsMu.Lock()
+	require.Equal(t, "S1", ws.clients[cidA].currentSessionID)
+	ws.clientsMu.Unlock()
+
+	require.NoError(t, b.SetCurrentSession(ws.ID, cidB, "S1"))
+	ws.clientsMu.Lock()
+	require.Equal(t, "S1", ws.clients[cidA].currentSessionID)
+	require.Equal(t, "S1", ws.clients[cidB].currentSessionID)
+	ws.clientsMu.Unlock()
+
+	// B switches to S2; counts redistribute.
+	require.NoError(t, b.SetCurrentSession(ws.ID, cidB, "S2"))
+	ws.clientsMu.Lock()
+	require.Equal(t, "S1", ws.clients[cidA].currentSessionID)
+	require.Equal(t, "S2", ws.clients[cidB].currentSessionID)
+	ws.clientsMu.Unlock()
+
+	// A clears its selection.
+	require.NoError(t, b.SetCurrentSession(ws.ID, cidA, ""))
+	ws.clientsMu.Lock()
+	require.Empty(t, ws.clients[cidA].currentSessionID)
+	require.Equal(t, "S2", ws.clients[cidB].currentSessionID)
+	ws.clientsMu.Unlock()
+
+	// Drain to release the workspace.
+	b.DetachClient(ws.ID, cidA)
+	b.DetachClient(ws.ID, cidB)
+}
+
+// TestSetCurrentSession_DetachClearsEntry verifies the implicit
+// cleanup: once a client's [clientState] entry is removed (last
+// stream closed), its currentSessionID is gone with it.
+func TestSetCurrentSession_DetachClearsEntry(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	ws, _ := insertTestWorkspace(t, b, "/tmp/current-session-detach")
+
+	// Anchor client so the workspace is not torn down when cid
+	// detaches.
+	anchor := newClientID(t)
+	require.NoError(t, b.AttachClient(ws.ID, anchor))
+
+	cid := newClientID(t)
+	require.NoError(t, b.AttachClient(ws.ID, cid))
+	require.NoError(t, b.SetCurrentSession(ws.ID, cid, "S2"))
+
+	b.DetachClient(ws.ID, cid)
+
+	ws.clientsMu.Lock()
+	_, present := ws.clients[cid]
+	ws.clientsMu.Unlock()
+	require.False(t, present, "detach must remove the clientState entry along with its currentSessionID")
+
+	// A follow-up SetCurrentSession on the gone client must be
+	// rejected with ErrClientNotAttached.
+	require.ErrorIs(t, b.SetCurrentSession(ws.ID, cid, "S3"), ErrClientNotAttached)
+
+	b.DetachClient(ws.ID, anchor)
+}
+
+// TestSetCurrentSession_RejectsHoldOnly verifies that a registered
+// client whose only claim is a creation hold (streams == 0) cannot
+// influence presence: SetCurrentSession returns ErrClientNotAttached
+// and the entry's currentSessionID stays empty.
+func TestSetCurrentSession_RejectsHoldOnly(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	// Keep the grace window large so the hold survives the test.
+	b.createGrace = time.Hour
+	ws, _ := insertTestWorkspace(t, b, "/tmp/current-session-hold")
+
+	cid := newClientID(t)
+	b.registerClient(ws, cid)
+
+	require.ErrorIs(t, b.SetCurrentSession(ws.ID, cid, "S1"), ErrClientNotAttached)
+
+	ws.clientsMu.Lock()
+	require.Empty(t, ws.clients[cid].currentSessionID, "hold-only client must not write a session id")
+	ws.clientsMu.Unlock()
+
+	// Drain.
+	require.NoError(t, b.releaseHold(ws.ID, cid))
+}
+
+// TestSetCurrentSession_UnknownClient verifies that a client with no
+// entry at all is rejected with ErrClientNotAttached.
+func TestSetCurrentSession_UnknownClient(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	ws, _ := insertTestWorkspace(t, b, "/tmp/current-session-unknown")
+
+	require.ErrorIs(t, b.SetCurrentSession(ws.ID, newClientID(t), "S1"), ErrClientNotAttached)
+}
+
+// TestSetCurrentSession_RejectsBadInputs covers the validation
+// branches: empty/malformed client_id and unknown workspace.
+func TestSetCurrentSession_RejectsBadInputs(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	ws, _ := insertTestWorkspace(t, b, "/tmp/current-session-bad")
+
+	require.ErrorIs(t, b.SetCurrentSession(ws.ID, "", "S1"), ErrInvalidClientID)
+	require.ErrorIs(t, b.SetCurrentSession(ws.ID, "not-a-uuid", "S1"), ErrInvalidClientID)
+
+	require.ErrorIs(
+		t,
+		b.SetCurrentSession("00000000-0000-0000-0000-000000000000", newClientID(t), "S1"),
+		ErrWorkspaceNotFound,
+	)
+}
+
+// TestSetCurrentSession_RaceWithDetach exercises concurrent
+// SetCurrentSession updates from one client racing against detach
+// on a second client. The final state must be self-consistent: any
+// remaining clientState entries reflect a coherent
+// (streams, currentSessionID) pair.
+func TestSetCurrentSession_RaceWithDetach(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestBackend(t)
+	ws, _ := insertTestWorkspace(t, b, "/tmp/current-session-race")
+
+	cidA := newClientID(t)
+	cidB := newClientID(t)
+	require.NoError(t, b.AttachClient(ws.ID, cidA))
+	require.NoError(t, b.AttachClient(ws.ID, cidB))
+
+	var wg sync.WaitGroup
+	const updates = 200
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := range updates {
+			// Errors are tolerated: once cidA detaches,
+			// further updates against cidA must return
+			// ErrClientNotAttached but never panic.
+			_ = b.SetCurrentSession(ws.ID, cidA, "SA")
+			_ = i
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range updates {
+			_ = b.SetCurrentSession(ws.ID, cidB, "SB")
+			_ = i
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		// Single concurrent detach of cidA partway through.
+		b.DetachClient(ws.ID, cidA)
+	}()
+	wg.Wait()
+
+	ws.clientsMu.Lock()
+	defer ws.clientsMu.Unlock()
+	require.NotContains(t, ws.clients, cidA, "detached client must be gone")
+	require.Contains(t, ws.clients, cidB, "remaining client must still be present")
+	require.Equal(t, "SB", ws.clients[cidB].currentSessionID, "remaining client must keep its last set session")
+}

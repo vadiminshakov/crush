@@ -67,6 +67,12 @@ type Workspace interface {
 	DeleteSession(ctx context.Context, sessionID string) error
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
+	// SetCurrentSession reports the session this client is currently
+	// viewing. Empty sessionID clears the entry (e.g. landing screen).
+	// In single-client local mode this is a no-op. In client/server
+	// mode it informs the server's per-client presence map so other
+	// observers can compute attached-client counts per session.
+	SetCurrentSession(ctx context.Context, sessionID string) error
 
 	// Messages
 	ListMessages(ctx context.Context, sessionID string) ([]message.Message, error)

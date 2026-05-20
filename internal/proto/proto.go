@@ -36,6 +36,12 @@ type ConfigChanged struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
+// CurrentSession is the request body for the per-client
+// current-session endpoint. An empty SessionID clears the entry.
+type CurrentSession struct {
+	SessionID string `json:"session_id"`
+}
+
 // AgentInfo represents information about the agent.
 type AgentInfo struct {
 	IsBusy   bool                 `json:"is_busy"`

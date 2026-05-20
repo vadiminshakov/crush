@@ -10,8 +10,25 @@ import (
 
 	"github.com/charmbracelet/crush/internal/backend"
 	"github.com/charmbracelet/crush/internal/proto"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+// installSyntheticWorkspace creates a synthetic [backend.Workspace]
+// registered with the controller's backend, suitable for handler-level
+// tests that do not need a real [app.App]. The workspace's ID is a
+// fresh UUID and its path is a tempdir; teardown is the caller's
+// responsibility (handlers should not rely on synthetic workspaces
+// disappearing automatically).
+func installSyntheticWorkspace(t *testing.T, c *controllerV1) *backend.Workspace {
+	t.Helper()
+	ws := &backend.Workspace{
+		ID:   uuid.New().String(),
+		Path: t.TempDir(),
+	}
+	backend.InsertWorkspaceForTest(c.backend, ws)
+	return ws
+}
 
 // newTestController builds a controllerV1 around a backend without a
 // real config store, suitable for handler-level 400 tests.
@@ -104,4 +121,110 @@ func TestSubscribeEvents_RejectsMalformedClientID(t *testing.T) {
 	c.handleGetWorkspaceEvents(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// postCurrentSession is a small helper that POSTs the JSON body to
+// /v1/workspaces/{id}/current-session?client_id=cid and returns the
+// recorder. It does not require a real listener.
+func postCurrentSession(t *testing.T, c *controllerV1, wsID, clientID, sessionID string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(proto.CurrentSession{SessionID: sessionID})
+	require.NoError(t, err)
+	url := "/v1/workspaces/" + wsID + "/current-session"
+	if clientID != "" {
+		url += "?client_id=" + clientID
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewReader(body))
+	req.SetPathValue("id", wsID)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handlePostWorkspaceCurrentSession(rec, req)
+	return rec
+}
+
+func TestPostCurrentSession_RejectsMissingClientID(t *testing.T) {
+	t.Parallel()
+	c := newTestController()
+
+	body, err := json.Marshal(proto.CurrentSession{SessionID: "S1"})
+	require.NoError(t, err)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces/abc/current-session", bytes.NewReader(body))
+	req.SetPathValue("id", "abc")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	c.handlePostWorkspaceCurrentSession(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPostCurrentSession_RejectsMalformedClientID(t *testing.T) {
+	t.Parallel()
+	c := newTestController()
+
+	rec := postCurrentSession(t, c, "abc", "not-a-uuid", "S1")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPostCurrentSession_RejectsBadBody(t *testing.T) {
+	t.Parallel()
+	c := newTestController()
+
+	cid := uuid.New().String()
+	url := "/v1/workspaces/abc/current-session?client_id=" + cid
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewReader([]byte("not-json")))
+	req.SetPathValue("id", "abc")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	c.handlePostWorkspaceCurrentSession(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPostCurrentSession_UnknownWorkspace(t *testing.T) {
+	t.Parallel()
+	c := newTestController()
+
+	rec := postCurrentSession(t, c, uuid.New().String(), uuid.New().String(), "S1")
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestPostCurrentSession_UnknownClient(t *testing.T) {
+	t.Parallel()
+	c := newTestController()
+	ws := installSyntheticWorkspace(t, c)
+
+	rec := postCurrentSession(t, c, ws.ID, uuid.New().String(), "S1")
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestPostCurrentSession_HoldOnly(t *testing.T) {
+	t.Parallel()
+	c := newTestController()
+	ws := installSyntheticWorkspace(t, c)
+
+	cid := uuid.New().String()
+	require.NoError(t, backend.RegisterClientForTesting(c.backend, ws, cid))
+	t.Cleanup(func() { _ = c.backend.DeleteWorkspace(ws.ID, cid) })
+
+	rec := postCurrentSession(t, c, ws.ID, cid, "S1")
+	require.Equal(t, http.StatusNotFound, rec.Code, "hold-only client must be rejected")
+}
+
+func TestPostCurrentSession_AttachedClientSucceeds(t *testing.T) {
+	t.Parallel()
+	c := newTestController()
+	ws := installSyntheticWorkspace(t, c)
+
+	cid := uuid.New().String()
+	require.NoError(t, c.backend.AttachClient(ws.ID, cid))
+	t.Cleanup(func() { c.backend.DetachClient(ws.ID, cid) })
+
+	rec := postCurrentSession(t, c, ws.ID, cid, "S1")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Clearing also returns 200.
+	rec = postCurrentSession(t, c, ws.ID, cid, "")
+	require.Equal(t, http.StatusOK, rec.Code)
 }

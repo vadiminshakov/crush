@@ -32,6 +32,7 @@ var (
 	ErrInvalidPermissionAction = errors.New("invalid permission action")
 	ErrUnknownCommand          = errors.New("unknown command")
 	ErrInvalidClientID         = errors.New("invalid client_id")
+	ErrClientNotAttached       = errors.New("client not attached")
 )
 
 // DefaultCreateGrace is the window in which a client must open an SSE
@@ -77,13 +78,18 @@ type Backend struct {
 //   - holdTimer is non-nil iff the client created the workspace but has
 //     not yet attached an SSE stream; it fires after createGrace and
 //     releases the hold.
+//   - currentSessionID records which session this client is currently
+//     viewing. Empty string means the client has no session selected
+//     (e.g. the landing screen). Cleared automatically when the
+//     clientState entry is removed.
 //
-// The two are mutually exclusive in practice (the hold timer is stopped
-// the moment an SSE stream attaches), but both being zero/nil means the
-// entry has been released and should be removed.
+// streams and holdTimer are mutually exclusive in practice (the hold
+// timer is stopped the moment an SSE stream attaches), but both being
+// zero/nil means the entry has been released and should be removed.
 type clientState struct {
-	streams   int
-	holdTimer *time.Timer
+	streams          int
+	holdTimer        *time.Timer
+	currentSessionID string
 }
 
 // Workspace represents a running [app.App] workspace with its
@@ -466,6 +472,39 @@ func (b *Backend) teardown(ws *Workspace) {
 // workspace open until their own deferred DetachClient runs.
 func (b *Backend) DeleteWorkspace(id, clientID string) error {
 	return b.releaseHold(id, clientID)
+}
+
+// SetCurrentSession records which session the given client is
+// currently viewing within the workspace. Passing an empty sessionID
+// clears the client's current-session entry (e.g. the client has
+// returned to the landing screen).
+//
+// The client must be actually attached — i.e. its [clientState] entry
+// must exist and have at least one live stream. A bare creation hold
+// (streams == 0) is rejected with [ErrClientNotAttached]. This
+// guards against zombie writes from a client that has detached and
+// against ghost presence from a hold-only client that never opened an
+// SSE stream.
+func (b *Backend) SetCurrentSession(workspaceID, clientID, sessionID string) error {
+	if _, err := validateClientID(clientID); err != nil {
+		return err
+	}
+	ws, ok := b.workspaces.Get(workspaceID)
+	if !ok {
+		return ErrWorkspaceNotFound
+	}
+	ws.clientsMu.Lock()
+	defer ws.clientsMu.Unlock()
+	cs, ok := ws.clients[clientID]
+	if !ok || cs.streams == 0 {
+		// No entry, or hold-only (no live stream): refuse the
+		// write. The presence record this is meant to feed
+		// should only reflect clients that can actually observe
+		// session events.
+		return ErrClientNotAttached
+	}
+	cs.currentSessionID = sessionID
+	return nil
 }
 
 // GetWorkspaceProto returns the proto representation of a workspace.

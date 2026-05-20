@@ -18,3 +18,15 @@ func InsertWorkspaceForTest(b *Backend, ws *Workspace) {
 		b.pathIndex[ws.resolvedPath] = ws.ID
 	}
 }
+
+// RegisterClientForTesting installs a creation hold for clientID on
+// ws using the backend's normal registerClient path. Intended for
+// tests in other packages that need to drive a hold-only client
+// (streams == 0) without booting a real CreateWorkspace flow.
+func RegisterClientForTesting(b *Backend, ws *Workspace, clientID string) error {
+	if _, err := validateClientID(clientID); err != nil {
+		return err
+	}
+	b.registerClient(ws, clientID)
+	return nil
+}

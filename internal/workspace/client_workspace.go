@@ -131,6 +131,14 @@ func (w *ClientWorkspace) ParseAgentToolSessionID(sessionID string) (string, str
 	return parts[0], parts[1], true
 }
 
+// SetCurrentSession reports the session this client is currently
+// viewing to the server. Empty sessionID clears the entry. Errors
+// are propagated to the caller; the TUI logs and ignores them since
+// the presence record is a hint, not correctness-critical state.
+func (w *ClientWorkspace) SetCurrentSession(ctx context.Context, sessionID string) error {
+	return w.client.SetCurrentSession(ctx, w.workspaceID(), sessionID)
+}
+
 // -- Messages --
 
 func (w *ClientWorkspace) ListMessages(ctx context.Context, sessionID string) ([]message.Message, error) {

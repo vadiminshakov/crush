@@ -67,6 +67,13 @@ func (w *AppWorkspace) ParseAgentToolSessionID(sessionID string) (string, string
 	return w.app.Sessions.ParseAgentToolSessionID(sessionID)
 }
 
+// SetCurrentSession is a no-op in single-client local mode. The
+// presence concept only matters when multiple clients can share a
+// workspace via the HTTP server.
+func (w *AppWorkspace) SetCurrentSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+
 // -- Messages --
 
 func (w *AppWorkspace) ListMessages(ctx context.Context, sessionID string) ([]message.Message, error) {

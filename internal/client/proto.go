@@ -86,6 +86,30 @@ func (c *Client) DeleteWorkspace(ctx context.Context, id string) error {
 	return nil
 }
 
+// SetCurrentSession reports the client's current-session selection
+// for the named workspace. An empty sessionID clears the entry. The
+// request carries the process-scoped client ID minted in [NewClient]
+// as a query parameter so the server can route the update to the
+// correct [clientState] entry.
+func (c *Client) SetCurrentSession(ctx context.Context, workspaceID, sessionID string) error {
+	q := url.Values{"client_id": []string{c.clientID}}
+	rsp, err := c.post(
+		ctx,
+		fmt.Sprintf("/workspaces/%s/current-session", workspaceID),
+		q,
+		jsonBody(proto.CurrentSession{SessionID: sessionID}),
+		http.Header{"Content-Type": []string{"application/json"}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set current session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to set current session: status code %d", rsp.StatusCode)
+	}
+	return nil
+}
+
 // SubscribeEvents subscribes to server-sent events for a workspace.
 func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, error) {
 	events := make(chan any, 100)
