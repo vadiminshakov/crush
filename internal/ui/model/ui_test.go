@@ -163,6 +163,7 @@ func TestToggleInputMode(t *testing.T) {
 		},
 		mode:     uiInputModeCode,
 		textarea: textarea.New(),
+		status:   &Status{},
 	}
 
 	msg := ui.toggleInputMode()()
