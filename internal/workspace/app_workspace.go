@@ -201,6 +201,12 @@ func (w *AppWorkspace) PermissionSetSkipRequests(skip bool) {
 	w.app.Permissions.SetSkipRequests(skip)
 }
 
+// -- Questions --
+
+func (w *AppWorkspace) QuestionRespond(id, answer string) {
+	w.app.Questions.Respond(id, answer)
+}
+
 // -- FileTracker --
 
 func (w *AppWorkspace) FileTrackerRecordRead(ctx context.Context, sessionID, path string) {
