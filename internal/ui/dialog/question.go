@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/help"
@@ -39,6 +40,11 @@ type questionKeyMap struct {
 	Num2   key.Binding
 	Num3   key.Binding
 	Num4   key.Binding
+	Num5   key.Binding
+	Num6   key.Binding
+	Num7   key.Binding
+	Num8   key.Binding
+	Num9   key.Binding
 	Close  key.Binding
 }
 
@@ -47,10 +53,15 @@ func defaultQuestionKeyMap() questionKeyMap {
 		Up:     key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "up")),
 		Down:   key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "down")),
 		Select: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
-		Num1:   key.NewBinding(key.WithKeys("1")),
+		Num1:   key.NewBinding(key.WithKeys("1"), key.WithHelp("1-9", "quick select")),
 		Num2:   key.NewBinding(key.WithKeys("2")),
 		Num3:   key.NewBinding(key.WithKeys("3")),
 		Num4:   key.NewBinding(key.WithKeys("4")),
+		Num5:   key.NewBinding(key.WithKeys("5")),
+		Num6:   key.NewBinding(key.WithKeys("6")),
+		Num7:   key.NewBinding(key.WithKeys("7")),
+		Num8:   key.NewBinding(key.WithKeys("8")),
+		Num9:   key.NewBinding(key.WithKeys("9")),
 		Close:  CloseKey,
 	}
 }
@@ -94,7 +105,7 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		// Number shortcuts always work — immediately select and submit.
-		numBindings := []key.Binding{q.keyMap.Num1, q.keyMap.Num2, q.keyMap.Num3, q.keyMap.Num4}
+		numBindings := []key.Binding{q.keyMap.Num1, q.keyMap.Num2, q.keyMap.Num3, q.keyMap.Num4, q.keyMap.Num5, q.keyMap.Num6, q.keyMap.Num7, q.keyMap.Num8, q.keyMap.Num9}
 		for i, kb := range numBindings {
 			if key.Matches(msg, kb) && i < len(q.request.Options) {
 				return q.respond(q.request.Options[i])
@@ -178,10 +189,11 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		var lines []string
 		for i, opt := range q.request.Options {
 			var line string
+			numStr := fmt.Sprintf("%d", i+1)
 			if !q.inputFocused && i == q.selectedOption {
-				line = s.Dialog.SelectedItem.Width(innerWidth).Render(" > " + opt)
+				line = s.Dialog.SelectedItem.Width(innerWidth).Render(" > " + numStr + ". " + opt)
 			} else {
-				line = s.Dialog.NormalItem.Width(innerWidth).Render("   " + opt)
+				line = s.Dialog.NormalItem.Width(innerWidth).Render("   " + numStr + ". " + opt)
 			}
 			lines = append(lines, line)
 		}
@@ -223,7 +235,7 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 // ShortHelp implements help.KeyMap.
 func (q *Question) ShortHelp() []key.Binding {
-	return []key.Binding{q.keyMap.Up, q.keyMap.Down, q.keyMap.Select, q.keyMap.Close}
+	return []key.Binding{q.keyMap.Up, q.keyMap.Down, q.keyMap.Select, q.keyMap.Num1, q.keyMap.Close}
 }
 
 // FullHelp implements help.KeyMap.
