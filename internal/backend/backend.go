@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/proto"
+	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/google/uuid"
@@ -96,10 +97,11 @@ type clientState struct {
 // associated resources and state.
 type Workspace struct {
 	*app.App
-	ID   string
-	Path string
-	Cfg  *config.ConfigStore
-	Env  []string
+	ID     string
+	Path   string
+	Cfg    *config.ConfigStore
+	Env    []string
+	Skills *skills.Manager
 
 	// resolvedPath is the path used as the dedup key in
 	// Backend.pathIndex. It is filepath.EvalSymlinks(filepath.Abs(Path))
@@ -228,7 +230,14 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 		return nil, proto.Workspace{}, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	appWorkspace, err := app.New(b.ctx, conn, cfg)
+	// Discover skills once per workspace, before app.New. The backend
+	// hosts multiple workspaces concurrently, so the manager is
+	// constructed WITHOUT WithGlobalMirror to prevent last-writer-wins
+	// cross-talk between workspaces.
+	allSkills, activeSkills, skillStates := skills.DiscoverFromConfig(skillsDiscoveryConfig(cfg))
+	skillsMgr := skills.NewManager(allSkills, activeSkills, skillStates)
+
+	appWorkspace, err := app.New(b.ctx, conn, cfg, skillsMgr)
 	if err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to create app workspace: %w", err)
 	}
@@ -239,6 +248,7 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 		Path:         args.Path,
 		Cfg:          cfg,
 		Env:          args.Env,
+		Skills:       skillsMgr,
 		resolvedPath: key,
 		clients:      make(map[string]*clientState),
 	}
@@ -280,6 +290,47 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 	}
 
 	return ws, workspaceToProto(ws), nil
+}
+
+// skillsDiscoveryConfig adapts a *config.ConfigStore to the
+// skills.DiscoveryConfig that DiscoverFromConfig consumes.
+func skillsDiscoveryConfig(cfg *config.ConfigStore) skills.DiscoveryConfig {
+	opts := cfg.Config().Options
+	var paths, disabled []string
+	if opts != nil {
+		paths = opts.SkillsPaths
+		disabled = opts.DisabledSkills
+	}
+	var resolver func(string) (string, error)
+	if r := cfg.Resolver(); r != nil {
+		resolver = r.ResolveValue
+	}
+	return skills.DiscoveryConfig{
+		SkillsPaths:    paths,
+		DisabledSkills: disabled,
+		Resolver:       resolver,
+	}
+}
+
+// skillStatesToProto converts internal skill discovery states into the
+// wire format.
+func skillStatesToProto(states []*skills.SkillState) []proto.SkillState {
+	if len(states) == 0 {
+		return nil
+	}
+	out := make([]proto.SkillState, len(states))
+	for i, s := range states {
+		entry := proto.SkillState{
+			Name:  s.Name,
+			Path:  s.Path,
+			State: proto.SkillDiscoveryState(s.State),
+		}
+		if s.Err != nil {
+			entry.Error = s.Err.Error()
+		}
+		out[i] = entry
+	}
+	return out
 }
 
 // AttachClient registers a new SSE stream for the given client on the
@@ -598,7 +649,7 @@ func validateClientID(id string) (string, error) {
 
 func workspaceToProto(ws *Workspace) proto.Workspace {
 	cfg := ws.Cfg.Config()
-	return proto.Workspace{
+	out := proto.Workspace{
 		ID:      ws.ID,
 		Path:    ws.Path,
 		YOLO:    ws.Cfg.Overrides().SkipPermissionRequests,
@@ -608,6 +659,10 @@ func workspaceToProto(ws *Workspace) proto.Workspace {
 		Env:     ws.Env,
 		Version: version.Version,
 	}
+	if ws.Skills != nil {
+		out.Skills = skillStatesToProto(ws.Skills.States())
+	}
+	return out
 }
 
 // logFirstWinsMismatch emits a debug line whenever a second

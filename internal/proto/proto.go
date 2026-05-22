@@ -22,6 +22,10 @@ type Workspace struct {
 	ClientID string         `json:"client_id,omitempty"`
 	Config   *config.Config `json:"config,omitempty"`
 	Env      []string       `json:"env,omitempty"`
+	// Skills carries the snapshot of skill discovery state at workspace
+	// creation time. Subsequent updates flow through the SSE event
+	// stream.
+	Skills []SkillState `json:"skills,omitempty"`
 }
 
 // Error represents an error response.

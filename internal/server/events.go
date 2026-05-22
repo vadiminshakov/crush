@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/skills"
 )
 
 // wrapEvent converts a raw tea.Msg (a pubsub.Event[T] from the app
@@ -94,6 +95,11 @@ func wrapEvent(ev any) *pubsub.Payload {
 		})
 	case pubsub.Event[proto.ConfigChanged]:
 		return envelope(pubsub.PayloadTypeConfigChanged, e)
+	case pubsub.Event[skills.Event]:
+		return envelope(pubsub.PayloadTypeSkillsEvent, pubsub.Event[proto.SkillsEvent]{
+			Type:    e.Type,
+			Payload: skillsEventToProto(e.Payload),
+		})
 	default:
 		slog.Warn("Unrecognized event type for SSE wrapping", "type", fmt.Sprintf("%T", ev))
 		return nil
@@ -248,6 +254,27 @@ func messageToProto(m message.Message) proto.Message {
 	}
 
 	return msg
+}
+
+// skillsEventToProto converts a skills.Event into its wire form. Errors
+// are flattened to strings because error does not round-trip over JSON.
+func skillsEventToProto(e skills.Event) proto.SkillsEvent {
+	if len(e.States) == 0 {
+		return proto.SkillsEvent{}
+	}
+	out := proto.SkillsEvent{States: make([]proto.SkillState, len(e.States))}
+	for i, s := range e.States {
+		entry := proto.SkillState{
+			Name:  s.Name,
+			Path:  s.Path,
+			State: proto.SkillDiscoveryState(s.State),
+		}
+		if s.Err != nil {
+			entry.Error = s.Err.Error()
+		}
+		out.States[i] = entry
+	}
+	return out
 }
 
 func messagesToProto(msgs []message.Message) []proto.Message {
