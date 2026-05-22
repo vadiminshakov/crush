@@ -1,12 +1,8 @@
 Ask the user a clarifying question and wait for their response before continuing.
 
 <when_to_use>
-Use when you need information from the user that you cannot determine on your own, and proceeding without it would risk doing the wrong thing or producing an incorrect result:
-- The task is ambiguous and multiple valid interpretations exist
-- A key decision depends on user preference (e.g. naming, style, approach)
-- You are about to make a hard-to-reverse change and need confirmation of intent
-
-Do not use for questions you can answer yourself by reading the codebase, documentation, or applying reasonable defaults.
+When ending your turn of the conversation with a question,
+pose it with this tool rather than as plain text.
 </when_to_use>
 
 <usage_notes>
