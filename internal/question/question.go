@@ -59,6 +59,8 @@ func (s *questionService) Ask(ctx context.Context, question string, options []st
 
 	select {
 	case <-ctx.Done():
+		// Tell the UI to dismiss the dialog for this now-abandoned request.
+		s.Publish(pubsub.DeletedEvent, req)
 		return "", ctx.Err()
 	case answer := <-respCh:
 		return answer, nil
@@ -68,6 +70,11 @@ func (s *questionService) Ask(ctx context.Context, question string, options []st
 func (s *questionService) Respond(id, answer string) {
 	ch, ok := s.pendingRequests.Get(id)
 	if ok {
-		ch <- answer
+		// respCh is buffered (1); the non-blocking send guards against a
+		// duplicate Respond for the same id stalling the caller.
+		select {
+		case ch <- answer:
+		default:
+		}
 	}
 }

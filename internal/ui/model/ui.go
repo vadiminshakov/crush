@@ -38,8 +38,8 @@ import (
 	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/stringext"
@@ -738,7 +738,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case pubsub.Event[question.QuestionRequest]:
-		m.openQuestionDialog(msg.Payload)
+		switch msg.Type {
+		case pubsub.CreatedEvent:
+			m.openQuestionDialog(msg.Payload)
+		case pubsub.DeletedEvent:
+			m.dialog.CloseDialog(dialog.QuestionID)
+		}
 	case pubsub.Event[permission.PermissionNotification]:
 		m.handlePermissionNotification(msg.Payload)
 	case cancelTimerExpiredMsg:

@@ -10,7 +10,7 @@ import (
 
 const QuestionToolName = "question"
 
-//go:embed question.md.tpl
+//go:embed question.md
 var questionDescription string
 
 // QuestionParams defines the parameters the model passes when calling this tool.
@@ -29,7 +29,10 @@ func NewQuestionTool(svc question.Service) fantasy.AgentTool {
 			}
 			answer, err := svc.Ask(ctx, params.Question, params.Options)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("question cancelled: " + err.Error()), nil
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			if answer == "" {
+				return fantasy.NewTextErrorResponse("the user dismissed the question without answering"), nil
 			}
 			return fantasy.NewTextResponse(answer), nil
 		},

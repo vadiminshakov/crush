@@ -31,8 +31,8 @@ import (
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/skills"
@@ -283,6 +283,8 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	if err := mcp.WaitForInit(ctx); err != nil {
 		return fmt.Errorf("failed to wait for MCP initialization: %w", err)
 	}
+
+	app.AgentCoordinator.SetNonInteractive(true)
 
 	// force update of agent models before running so mcp tools are loaded
 	app.AgentCoordinator.UpdateModels(ctx)
