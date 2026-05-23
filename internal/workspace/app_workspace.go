@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
 )
@@ -203,8 +204,8 @@ func (w *AppWorkspace) PermissionSetSkipRequests(skip bool) {
 
 // -- Questions --
 
-func (w *AppWorkspace) QuestionRespond(id, answer string) {
-	w.app.Questions.Respond(id, answer)
+func (w *AppWorkspace) QuestionRespond(id string, response question.QuestionResponse) {
+	w.app.Questions.Respond(id, response)
 }
 
 // -- FileTracker --

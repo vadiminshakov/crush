@@ -1584,7 +1584,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 	case dialog.ActionQuestionResponse:
 		m.dialog.CloseDialog(dialog.QuestionID)
-		m.com.Workspace.QuestionRespond(msg.Request.ID, msg.Answer)
+		m.com.Workspace.QuestionRespond(msg.Request.ID, msg.Response)
 
 	case dialog.ActionFilePickerSelected:
 		cmds = append(cmds, tea.Sequence(

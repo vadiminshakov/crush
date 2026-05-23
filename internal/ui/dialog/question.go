@@ -24,6 +24,8 @@ type Question struct {
 
 	// selectedOption is the index of the currently highlighted option (-1 = none).
 	selectedOption int
+	// selectedOptions tracks selected options in multi-select mode.
+	selectedOptions []bool
 	// inputFocused is true when the text input has keyboard focus.
 	inputFocused bool
 	input        textinput.Model
@@ -45,6 +47,7 @@ type questionKeyMap struct {
 	Num7   key.Binding
 	Num8   key.Binding
 	Num9   key.Binding
+	Toggle key.Binding
 	Close  key.Binding
 }
 
@@ -62,6 +65,7 @@ func defaultQuestionKeyMap() questionKeyMap {
 		Num7:   key.NewBinding(key.WithKeys("7")),
 		Num8:   key.NewBinding(key.WithKeys("8")),
 		Num9:   key.NewBinding(key.WithKeys("9")),
+		Toggle: key.NewBinding(key.WithKeys("space", " "), key.WithHelp("space", "toggle")),
 		Close:  CloseKey,
 	}
 }
@@ -79,7 +83,7 @@ func NewQuestion(com *common.Common, req question.QuestionRequest) *Question {
 	h := help.New()
 	h.Styles = com.Styles.DialogHelpStyles()
 
-	startInInputMode := len(req.Options) == 0
+	startInInputMode := len(req.Options) == 0 && !req.AllowMultiple
 	if startInInputMode {
 		input.Focus()
 	} else {
@@ -87,13 +91,14 @@ func NewQuestion(com *common.Common, req question.QuestionRequest) *Question {
 	}
 
 	return &Question{
-		com:            com,
-		request:        req,
-		selectedOption: 0,
-		inputFocused:   startInInputMode,
-		input:          input,
-		help:           h,
-		keyMap:         defaultQuestionKeyMap(),
+		com:             com,
+		request:         req,
+		selectedOption:  0,
+		selectedOptions: make([]bool, len(req.Options)),
+		inputFocused:    startInInputMode,
+		input:           input,
+		help:            h,
+		keyMap:          defaultQuestionKeyMap(),
 	}
 }
 
@@ -108,6 +113,10 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 		numBindings := []key.Binding{q.keyMap.Num1, q.keyMap.Num2, q.keyMap.Num3, q.keyMap.Num4, q.keyMap.Num5, q.keyMap.Num6, q.keyMap.Num7, q.keyMap.Num8, q.keyMap.Num9}
 		for i, kb := range numBindings {
 			if key.Matches(msg, kb) && i < len(q.request.Options) {
+				if q.request.AllowMultiple {
+					q.toggleOption(i)
+					return nil
+				}
 				return q.respond(q.request.Options[i])
 			}
 		}
@@ -130,14 +139,23 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 			if !q.inputFocused {
 				if q.selectedOption < len(q.request.Options)-1 {
 					q.selectedOption++
-				} else {
+				} else if !q.request.AllowMultiple {
 					// Past last option → switch to text input.
 					q.inputFocused = true
 					q.input.Focus()
 				}
 			}
+		case key.Matches(msg, q.keyMap.Toggle):
+			if q.request.AllowMultiple {
+				q.toggleOption(q.selectedOption)
+			}
 		case key.Matches(msg, q.keyMap.Select):
-			if q.inputFocused {
+			if q.request.AllowMultiple {
+				answers := q.selectedAnswers()
+				if len(answers) > 0 {
+					return q.respond(answers...)
+				}
+			} else if q.inputFocused {
 				val := strings.TrimSpace(q.input.Value())
 				if val != "" {
 					return q.respond(val)
@@ -162,10 +180,26 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 	return nil
 }
 
-func (q *Question) respond(answer string) Action {
+func (q *Question) toggleOption(index int) {
+	if index >= 0 && index < len(q.selectedOptions) {
+		q.selectedOptions[index] = !q.selectedOptions[index]
+	}
+}
+
+func (q *Question) selectedAnswers() []string {
+	answers := make([]string, 0, len(q.selectedOptions))
+	for i, selected := range q.selectedOptions {
+		if selected && i < len(q.request.Options) {
+			answers = append(answers, q.request.Options[i])
+		}
+	}
+	return answers
+}
+
+func (q *Question) respond(answers ...string) Action {
 	return ActionQuestionResponse{
-		Request: q.request,
-		Answer:  answer,
+		Request:  q.request,
+		Response: question.QuestionResponse{Answers: answers},
 	}
 }
 
@@ -190,10 +224,17 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		for i, opt := range q.request.Options {
 			var line string
 			numStr := fmt.Sprintf("%d", i+1)
+			marker := ""
+			if q.request.AllowMultiple {
+				marker = "[ ] "
+				if i < len(q.selectedOptions) && q.selectedOptions[i] {
+					marker = "[x] "
+				}
+			}
 			if !q.inputFocused && i == q.selectedOption {
-				line = s.Dialog.SelectedItem.Width(innerWidth).Render(" > " + numStr + ". " + opt)
+				line = s.Dialog.SelectedItem.Width(innerWidth).Render(" > " + numStr + ". " + marker + opt)
 			} else {
-				line = s.Dialog.NormalItem.Width(innerWidth).Render("   " + numStr + ". " + opt)
+				line = s.Dialog.NormalItem.Width(innerWidth).Render("   " + numStr + ". " + marker + opt)
 			}
 			lines = append(lines, line)
 		}
@@ -201,10 +242,12 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 
 	// Free-text input.
-	inputLabel := lipgloss.NewStyle().Faint(true).Render("Or type your answer:")
-	q.input.SetWidth(innerWidth - s.Dialog.InputPrompt.GetHorizontalFrameSize())
-	inputView := s.Dialog.InputPrompt.Render(q.input.View())
-	rc.AddPart(lipgloss.JoinVertical(lipgloss.Left, inputLabel, inputView))
+	if !q.request.AllowMultiple {
+		inputLabel := lipgloss.NewStyle().Faint(true).Render("Or type your answer:")
+		q.input.SetWidth(innerWidth - s.Dialog.InputPrompt.GetHorizontalFrameSize())
+		inputView := s.Dialog.InputPrompt.Render(q.input.View())
+		rc.AddPart(lipgloss.JoinVertical(lipgloss.Left, inputLabel, inputView))
+	}
 
 	// Help bar.
 	rc.Help = q.help.View(q)
@@ -224,7 +267,9 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 			if len(q.request.Options) > 0 {
 				linesAbove += len(q.request.Options) + rc.Gap
 			}
-			linesAbove++ // "Or type your answer:" label line
+			if !q.request.AllowMultiple {
+				linesAbove++ // "Or type your answer:" label line
+			}
 			cur.Y += linesAbove
 		}
 	}
@@ -235,6 +280,9 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 // ShortHelp implements help.KeyMap.
 func (q *Question) ShortHelp() []key.Binding {
+	if q.request.AllowMultiple {
+		return []key.Binding{q.keyMap.Up, q.keyMap.Down, q.keyMap.Toggle, q.keyMap.Select, q.keyMap.Num1, q.keyMap.Close}
+	}
 	return []key.Binding{q.keyMap.Up, q.keyMap.Down, q.keyMap.Select, q.keyMap.Num1, q.keyMap.Close}
 }
 

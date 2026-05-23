@@ -73,8 +73,8 @@ type (
 	}
 	// ActionQuestionResponse is sent when the user answers the model's question.
 	ActionQuestionResponse struct {
-		Request question.QuestionRequest
-		Answer  string
+		Request  question.QuestionRequest
+		Response question.QuestionResponse
 	}
 	// ActionRunCustomCommand is a message to run a custom command.
 	ActionRunCustomCommand struct {
