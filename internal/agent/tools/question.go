@@ -17,8 +17,8 @@ var questionDescription string
 // QuestionParams defines the parameters the model passes when calling this tool.
 type QuestionParams struct {
 	Question      string   `json:"question" description:"The clarifying question to ask the user"`
-	Options       []string `json:"options,omitempty" description:"Up to 4 suggested answers; the user may also type a custom answer unless allow_multiple is true"`
-	AllowMultiple bool     `json:"allow_multiple,omitempty" description:"Whether the user may select multiple options. Requires options and returns a JSON array of selected strings"`
+	Options       []string `json:"options,omitempty" description:"Up to 4 suggested answers; the user may also type a custom answer"`
+	AllowMultiple bool     `json:"allow_multiple,omitempty" description:"Whether the user may select multiple options. Returns a JSON array of selected and custom answer strings"`
 }
 
 func NewQuestionTool(svc question.Service) fantasy.AgentTool {
@@ -28,9 +28,6 @@ func NewQuestionTool(svc question.Service) fantasy.AgentTool {
 		func(ctx context.Context, params QuestionParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.Question == "" {
 				return fantasy.NewTextErrorResponse("question parameter is required"), nil
-			}
-			if params.AllowMultiple && len(params.Options) == 0 {
-				return fantasy.NewTextErrorResponse("options are required when allow_multiple is true"), nil
 			}
 			response, err := svc.Ask(ctx, params.Question, params.Options, params.AllowMultiple)
 			if err != nil {

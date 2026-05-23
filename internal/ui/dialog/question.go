@@ -83,7 +83,7 @@ func NewQuestion(com *common.Common, req question.QuestionRequest) *Question {
 	h := help.New()
 	h.Styles = com.Styles.DialogHelpStyles()
 
-	startInInputMode := len(req.Options) == 0 && !req.AllowMultiple
+	startInInputMode := len(req.Options) == 0
 	if startInInputMode {
 		input.Focus()
 	} else {
@@ -139,7 +139,7 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 			if !q.inputFocused {
 				if q.selectedOption < len(q.request.Options)-1 {
 					q.selectedOption++
-				} else if !q.request.AllowMultiple {
+				} else {
 					// Past last option → switch to text input.
 					q.inputFocused = true
 					q.input.Focus()
@@ -152,6 +152,9 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 		case key.Matches(msg, q.keyMap.Select):
 			if q.request.AllowMultiple {
 				answers := q.selectedAnswers()
+				if val := strings.TrimSpace(q.input.Value()); val != "" {
+					answers = append(answers, val)
+				}
 				if len(answers) > 0 {
 					return q.respond(answers...)
 				}
@@ -242,12 +245,10 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 
 	// Free-text input.
-	if !q.request.AllowMultiple {
-		inputLabel := lipgloss.NewStyle().Faint(true).Render("Or type your answer:")
-		q.input.SetWidth(innerWidth - s.Dialog.InputPrompt.GetHorizontalFrameSize())
-		inputView := s.Dialog.InputPrompt.Render(q.input.View())
-		rc.AddPart(lipgloss.JoinVertical(lipgloss.Left, inputLabel, inputView))
-	}
+	inputLabel := lipgloss.NewStyle().Faint(true).Render("Or type your answer:")
+	q.input.SetWidth(innerWidth - s.Dialog.InputPrompt.GetHorizontalFrameSize())
+	inputView := s.Dialog.InputPrompt.Render(q.input.View())
+	rc.AddPart(lipgloss.JoinVertical(lipgloss.Left, inputLabel, inputView))
 
 	// Help bar.
 	rc.Help = q.help.View(q)
@@ -267,9 +268,7 @@ func (q *Question) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 			if len(q.request.Options) > 0 {
 				linesAbove += len(q.request.Options) + rc.Gap
 			}
-			if !q.request.AllowMultiple {
-				linesAbove++ // "Or type your answer:" label line
-			}
+			linesAbove++ // "Or type your answer:" label line
 			cur.Y += linesAbove
 		}
 	}
