@@ -12,24 +12,33 @@ import (
 // QuestionRequest is the event published to the UI when the model wants
 // to ask the user a clarifying question.
 type QuestionRequest struct {
-	ID       string   `json:"id"`
-	Question string   `json:"question"`
-	Options  []string `json:"options"`
+	ID            string   `json:"id"`
+	Question      string   `json:"question"`
+	Options       []string `json:"options"`
+	AllowMultiple bool     `json:"allow_multiple,omitempty"`
+}
+
+// QuestionResponse is the answer submitted by the user for a question.
+type QuestionResponse struct {
+	Answer  string
+	Answers []string
 }
 
 // Service is the interface the tool and UI both depend on.
 type Service interface {
 	pubsub.Subscriber[QuestionRequest]
 	// Ask blocks until the user responds or ctx is cancelled.
-	Ask(ctx context.Context, question string, options []string) (string, error)
+	Ask(ctx context.Context, question string, options []string, allowMultiple bool) (QuestionResponse, error)
 	// Respond unblocks a pending Ask call with the given answer.
 	Respond(id, answer string)
+	// RespondMany unblocks a pending Ask call with multiple selected answers.
+	RespondMany(id string, answers []string)
 }
 
 type questionService struct {
 	*pubsub.Broker[QuestionRequest]
 
-	pendingRequests *csync.Map[string, chan string]
+	pendingRequests *csync.Map[string, chan QuestionResponse]
 	// serialises concurrent Ask calls — only one question shown at a time
 	requestMu sync.Mutex
 }
@@ -37,21 +46,22 @@ type questionService struct {
 func NewService() Service {
 	return &questionService{
 		Broker:          pubsub.NewBroker[QuestionRequest](),
-		pendingRequests: csync.NewMap[string, chan string](),
+		pendingRequests: csync.NewMap[string, chan QuestionResponse](),
 	}
 }
 
-func (s *questionService) Ask(ctx context.Context, question string, options []string) (string, error) {
+func (s *questionService) Ask(ctx context.Context, question string, options []string, allowMultiple bool) (QuestionResponse, error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
 
 	req := QuestionRequest{
-		ID:       uuid.New().String(),
-		Question: question,
-		Options:  options,
+		ID:            uuid.New().String(),
+		Question:      question,
+		Options:       options,
+		AllowMultiple: allowMultiple,
 	}
 
-	respCh := make(chan string, 1)
+	respCh := make(chan QuestionResponse, 1)
 	s.pendingRequests.Set(req.ID, respCh)
 	defer s.pendingRequests.Del(req.ID)
 
@@ -61,19 +71,27 @@ func (s *questionService) Ask(ctx context.Context, question string, options []st
 	case <-ctx.Done():
 		// Tell the UI to dismiss the dialog for this now-abandoned request.
 		s.Publish(pubsub.DeletedEvent, req)
-		return "", ctx.Err()
-	case answer := <-respCh:
-		return answer, nil
+		return QuestionResponse{}, ctx.Err()
+	case response := <-respCh:
+		return response, nil
 	}
 }
 
 func (s *questionService) Respond(id, answer string) {
+	s.respond(id, QuestionResponse{Answer: answer})
+}
+
+func (s *questionService) RespondMany(id string, answers []string) {
+	s.respond(id, QuestionResponse{Answers: answers})
+}
+
+func (s *questionService) respond(id string, response QuestionResponse) {
 	ch, ok := s.pendingRequests.Get(id)
 	if ok {
 		// respCh is buffered (1); the non-blocking send guards against a
 		// duplicate Respond for the same id stalling the caller.
 		select {
-		case ch <- answer:
+		case ch <- response:
 		default:
 		}
 	}

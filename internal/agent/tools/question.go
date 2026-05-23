@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/question"
@@ -15,8 +16,9 @@ var questionDescription string
 
 // QuestionParams defines the parameters the model passes when calling this tool.
 type QuestionParams struct {
-	Question string   `json:"question" description:"The clarifying question to ask the user"`
-	Options  []string `json:"options,omitempty" description:"Up to 4 suggested answers; the user may also type a custom answer"`
+	Question      string   `json:"question" description:"The clarifying question to ask the user"`
+	Options       []string `json:"options,omitempty" description:"Up to 4 suggested answers; the user may also type a custom answer unless allow_multiple is true"`
+	AllowMultiple bool     `json:"allow_multiple,omitempty" description:"Whether the user may select multiple options. Requires options and returns a JSON array of selected strings"`
 }
 
 func NewQuestionTool(svc question.Service) fantasy.AgentTool {
@@ -27,14 +29,27 @@ func NewQuestionTool(svc question.Service) fantasy.AgentTool {
 			if params.Question == "" {
 				return fantasy.NewTextErrorResponse("question parameter is required"), nil
 			}
-			answer, err := svc.Ask(ctx, params.Question, params.Options)
+			if params.AllowMultiple && len(params.Options) == 0 {
+				return fantasy.NewTextErrorResponse("options are required when allow_multiple is true"), nil
+			}
+			response, err := svc.Ask(ctx, params.Question, params.Options, params.AllowMultiple)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-			if answer == "" {
+			if params.AllowMultiple {
+				if len(response.Answers) == 0 {
+					return fantasy.NewTextErrorResponse("the user dismissed the question without answering"), nil
+				}
+				answerJSON, err := json.Marshal(response.Answers)
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
+				return fantasy.NewTextResponse(string(answerJSON)), nil
+			}
+			if response.Answer == "" {
 				return fantasy.NewTextErrorResponse("the user dismissed the question without answering"), nil
 			}
-			return fantasy.NewTextResponse(answer), nil
+			return fantasy.NewTextResponse(response.Answer), nil
 		},
 	)
 }
