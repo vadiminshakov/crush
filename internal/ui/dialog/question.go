@@ -121,6 +121,12 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 			}
 		}
 
+		if q.inputFocused && key.Matches(msg, q.keyMap.Toggle) {
+			var cmd tea.Cmd
+			q.input, cmd = q.input.Update(tea.KeyPressMsg(tea.Key{Text: " ", Code: ' '}))
+			return ActionCmd{Cmd: cmd}
+		}
+
 		switch {
 		case key.Matches(msg, q.keyMap.Close):
 			return q.respond("")
@@ -145,10 +151,8 @@ func (q *Question) HandleMsg(msg tea.Msg) Action {
 					q.input.Focus()
 				}
 			}
-		case key.Matches(msg, q.keyMap.Toggle):
-			if q.request.AllowMultiple {
-				q.toggleOption(q.selectedOption)
-			}
+		case key.Matches(msg, q.keyMap.Toggle) && q.request.AllowMultiple && !q.inputFocused:
+			q.toggleOption(q.selectedOption)
 		case key.Matches(msg, q.keyMap.Select):
 			if q.request.AllowMultiple {
 				answers := q.selectedAnswers()
