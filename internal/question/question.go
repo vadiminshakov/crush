@@ -20,7 +20,6 @@ type QuestionRequest struct {
 
 // QuestionResponse is the answer submitted by the user for a question.
 type QuestionResponse struct {
-	Answer  string
 	Answers []string
 }
 
@@ -29,17 +28,15 @@ type Service interface {
 	pubsub.Subscriber[QuestionRequest]
 	// Ask blocks until the user responds or ctx is cancelled.
 	Ask(ctx context.Context, question string, options []string, allowMultiple bool) (QuestionResponse, error)
-	// Respond unblocks a pending Ask call with the given answer.
-	Respond(id, answer string)
-	// RespondMany unblocks a pending Ask call with multiple selected answers.
-	RespondMany(id string, answers []string)
+	// Respond unblocks a pending Ask call with the given response.
+	Respond(id string, response QuestionResponse)
 }
 
 type questionService struct {
 	*pubsub.Broker[QuestionRequest]
 
 	pendingRequests *csync.Map[string, chan QuestionResponse]
-	// serialises concurrent Ask calls — only one question shown at a time
+	// serializes concurrent Ask calls so only one question is shown at a time.
 	requestMu sync.Mutex
 }
 
@@ -77,15 +74,7 @@ func (s *questionService) Ask(ctx context.Context, question string, options []st
 	}
 }
 
-func (s *questionService) Respond(id, answer string) {
-	s.respond(id, QuestionResponse{Answer: answer})
-}
-
-func (s *questionService) RespondMany(id string, answers []string) {
-	s.respond(id, QuestionResponse{Answers: answers})
-}
-
-func (s *questionService) respond(id string, response QuestionResponse) {
+func (s *questionService) Respond(id string, response QuestionResponse) {
 	ch, ok := s.pendingRequests.Get(id)
 	if ok {
 		// respCh is buffered (1); the non-blocking send guards against a

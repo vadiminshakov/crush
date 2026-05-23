@@ -46,10 +46,10 @@ func NewQuestionTool(svc question.Service) fantasy.AgentTool {
 				}
 				return fantasy.NewTextResponse(string(answerJSON)), nil
 			}
-			if response.Answer == "" {
+			if len(response.Answers) == 0 || response.Answers[0] == "" {
 				return fantasy.NewTextErrorResponse("the user dismissed the question without answering"), nil
 			}
-			return fantasy.NewTextResponse(response.Answer), nil
+			return fantasy.NewTextResponse(response.Answers[0]), nil
 		},
 	)
 }
