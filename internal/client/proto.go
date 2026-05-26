@@ -39,6 +39,7 @@ func (c *Client) ListWorkspaces(ctx context.Context) ([]proto.Workspace, error) 
 
 // CreateWorkspace creates a new workspace on the server.
 func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*proto.Workspace, error) {
+	ws.ClientID = c.clientID
 	rsp, err := c.post(ctx, "/workspaces", nil, jsonBody(ws), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
@@ -73,7 +74,8 @@ func (c *Client) GetWorkspace(ctx context.Context, id string) (*proto.Workspace,
 
 // DeleteWorkspace deletes a workspace on the server.
 func (c *Client) DeleteWorkspace(ctx context.Context, id string) error {
-	rsp, err := c.delete(ctx, fmt.Sprintf("/workspaces/%s", id), nil, nil)
+	q := url.Values{"client_id": []string{c.clientID}}
+	rsp, err := c.delete(ctx, fmt.Sprintf("/workspaces/%s", id), q, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete workspace: %w", err)
 	}
@@ -84,11 +86,36 @@ func (c *Client) DeleteWorkspace(ctx context.Context, id string) error {
 	return nil
 }
 
+// SetCurrentSession reports the client's current-session selection
+// for the named workspace. An empty sessionID clears the entry. The
+// request carries the process-scoped client ID minted in [NewClient]
+// as a query parameter so the server can route the update to the
+// correct [clientState] entry.
+func (c *Client) SetCurrentSession(ctx context.Context, workspaceID, sessionID string) error {
+	q := url.Values{"client_id": []string{c.clientID}}
+	rsp, err := c.post(
+		ctx,
+		fmt.Sprintf("/workspaces/%s/current-session", workspaceID),
+		q,
+		jsonBody(proto.CurrentSession{SessionID: sessionID}),
+		http.Header{"Content-Type": []string{"application/json"}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set current session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to set current session: status code %d", rsp.StatusCode)
+	}
+	return nil
+}
+
 // SubscribeEvents subscribes to server-sent events for a workspace.
 func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, error) {
 	events := make(chan any, 100)
+	q := url.Values{"client_id": []string{c.clientID}}
 	//nolint:bodyclose
-	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/events", id), nil, http.Header{
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/events", id), q, http.Header{
 		"Accept":        []string{"text/event-stream"},
 		"Cache-Control": []string{"no-cache"},
 		"Connection":    []string{"keep-alive"},
@@ -166,6 +193,10 @@ func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, er
 				sendEvent(ctx, events, e)
 			case pubsub.PayloadTypeAgentEvent:
 				var e pubsub.Event[proto.AgentEvent]
+				_ = json.Unmarshal(p.Payload, &e)
+				sendEvent(ctx, events, e)
+			case pubsub.PayloadTypeConfigChanged:
+				var e pubsub.Event[proto.ConfigChanged]
 				_ = json.Unmarshal(p.Payload, &e)
 				sendEvent(ctx, events, e)
 			case pubsub.PayloadTypeSkillsEvent:
@@ -482,17 +513,25 @@ func (c *Client) ListSessions(ctx context.Context, id string) ([]proto.Session, 
 	return sessions, nil
 }
 
-// GrantPermission grants a permission on a workspace.
-func (c *Client) GrantPermission(ctx context.Context, id string, req proto.PermissionGrant) error {
+// GrantPermission grants a permission on a workspace. The returned
+// bool reports whether this call resolved the pending request (true)
+// or found it already resolved by a previous caller (false). A false
+// value is not an error — it just means another subscriber resolved
+// the same request first.
+func (c *Client) GrantPermission(ctx context.Context, id string, req proto.PermissionGrant) (bool, error) {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/permissions/grant", id), nil, jsonBody(req), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
-		return fmt.Errorf("failed to grant permission: %w", err)
+		return false, fmt.Errorf("failed to grant permission: %w", err)
 	}
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to grant permission: status code %d", rsp.StatusCode)
+		return false, fmt.Errorf("failed to grant permission: status code %d", rsp.StatusCode)
 	}
-	return nil
+	var resp proto.PermissionGrantResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&resp); err != nil {
+		return false, fmt.Errorf("failed to decode grant permission response: %w", err)
+	}
+	return resp.Resolved, nil
 }
 
 // SetPermissionsSkipRequests sets the skip-requests flag for a workspace.
