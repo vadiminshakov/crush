@@ -642,17 +642,36 @@ func protoWS(path, dataDir, clientID string) proto.Workspace {
 	return proto.Workspace{Path: path, DataDir: dataDir, ClientID: clientID}
 }
 
+// syncBuffer is a thread-safe buffer that can be safely read and written
+// from multiple goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
 // captureDebugLogs installs a buffer-backed slog handler at Debug
 // level for the duration of the test, returning the buffer. The
 // previous default handler is restored via t.Cleanup.
-func captureDebugLogs(t *testing.T) *bytes.Buffer {
+func captureDebugLogs(t *testing.T) *syncBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	var sb syncBuffer
 	prev := slog.Default()
-	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	handler := slog.NewTextHandler(&sb, &slog.HandlerOptions{Level: slog.LevelDebug})
 	slog.SetDefault(slog.New(handler))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &buf
+	return &sb
 }
 
 // xdgIsolated points HOME and XDG_* variables at fresh tempdirs so
