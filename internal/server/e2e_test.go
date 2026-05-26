@@ -16,6 +16,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/backend"
+	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
@@ -357,9 +358,14 @@ func TestE2E_TwoClientsReceiveSameMessage(t *testing.T) {
 	ws, err := h.backend.GetWorkspace(wsRespA.ID)
 	require.NoError(t, err)
 	// Override the shutdown callback so test cleanup doesn't run
-	// the full app.Shutdown path (which would tear down LSP/MCP/DB
-	// resources the test doesn't need to exercise).
-	backend.SetWorkspaceShutdownFnForTest(ws, func() {})
+	// the full app.Shutdown path (which would tear down LSP/MCP
+	// resources the test doesn't need to exercise), but still
+	// release the pooled DB connection so Windows can clean up
+	// the temp data directory.
+	wsDataDir := ws.Cfg.Config().Options.DataDirectory
+	backend.SetWorkspaceShutdownFnForTest(ws, func() {
+		_ = db.Release(wsDataDir)
+	})
 
 	evcA, cancelA := h.subscribeSSE(t, ctx, ws.ID, cidA)
 	t.Cleanup(cancelA)
