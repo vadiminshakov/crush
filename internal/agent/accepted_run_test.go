@@ -28,8 +28,13 @@ func (a *sessionAgent) acceptedCount(sessionID string) int {
 }
 
 func (a *sessionAgent) hasPendingCancel(sessionID string) bool {
-	_, ok := a.pendingCancels.Get(sessionID)
-	return ok
+	mark, ok := a.cancelMark.Get(sessionID)
+	return ok && mark > 0
+}
+
+func (a *sessionAgent) pendingCancelMark(sessionID string) uint64 {
+	mark, _ := a.cancelMark.Get(sessionID)
+	return mark
 }
 
 func TestAcceptedRun_CloseIsIdempotent(t *testing.T) {
