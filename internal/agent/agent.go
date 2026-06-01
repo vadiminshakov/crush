@@ -183,12 +183,25 @@ func NewSessionAgent(
 	}
 }
 
-func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *fantasy.AgentResult, retErr error) {
+// ValidateCall performs the cheap structural validation that
+// sessionAgent.Run requires before a call can be dispatched: a call must
+// carry either a non-empty prompt or a text attachment, and it must name a
+// session. It is exported so callers that accept a run before dispatching it
+// (e.g. backend.SendMessage) can apply the same checks and keep the error
+// contract consistent.
+func ValidateCall(call SessionAgentCall) error {
 	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
-		return nil, ErrEmptyPrompt
+		return ErrEmptyPrompt
 	}
 	if call.SessionID == "" {
-		return nil, ErrSessionMissing
+		return ErrSessionMissing
+	}
+	return nil
+}
+
+func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *fantasy.AgentResult, retErr error) {
+	if err := ValidateCall(call); err != nil {
+		return nil, err
 	}
 
 	// Queue the message if busy. Strip OnComplete: the caller that
