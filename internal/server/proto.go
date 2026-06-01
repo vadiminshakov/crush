@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1035,15 +1034,15 @@ func (c *controllerV1) handleGetWorkspacePermissionsSkip(w http.ResponseWriter, 
 
 // handleError maps backend errors to HTTP status codes and writes the
 // JSON error response.
+//
+// Runtime cancellation of an agent run no longer reaches here for the
+// agent-prompt path: SendMessage is fire-and-forget (the handler returns
+// 202 before the run starts) and Backend.runAgent swallows
+// context.Canceled, surfacing the FinishReasonCanceled marker to SSE
+// subscribers instead. The remaining callers pass synchronous backend
+// errors, so context.Canceled gets no special case and would fall through
+// to the default 500 like any other unexpected error.
 func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err error) {
-	// A canceled agent run is not an error from the prompting
-	// client's perspective. The cancellation reaches every SSE
-	// subscriber via the FinishReasonCanceled marker on the assistant
-	// message; the still-open POST should not surface a 500.
-	if errors.Is(err, context.Canceled) {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
 	status := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, backend.ErrWorkspaceNotFound):

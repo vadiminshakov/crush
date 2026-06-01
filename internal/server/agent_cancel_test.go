@@ -150,6 +150,36 @@ func TestPostAgent_ReturnsOKOnContextCanceled(t *testing.T) {
 		t.Fatal("dispatched run was never entered")
 	}
 	close(coord.release)
+
+	// Wait for the dispatched run to fully return. Backend.runAgent
+	// swallows context.Canceled, so it must not publish a
+	// notify.TypeAgentError. Publishing would dereference the synthetic
+	// workspace's nil notification broker and crash this goroutine,
+	// which is the explicit guard that a cancel produces no top-level
+	// error event.
+	require.Eventually(t, func() bool {
+		return coord.ranCount.Load() == 1
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// TestHandleError_ContextCanceledFallsThroughTo500 documents the step 8
+// cleanup: the old context.Canceled special case in handleError was
+// removed because runtime cancellation of an agent run can no longer
+// reach handleError. The agent-prompt handler returns 202 before the run
+// starts (fire-and-forget SendMessage) and Backend.runAgent swallows
+// context.Canceled. Any context.Canceled that still reaches handleError
+// is therefore an unexpected synchronous error and falls through to the
+// default 500 like any other.
+func TestHandleError_ContextCanceledFallsThroughTo500(t *testing.T) {
+	t.Parallel()
+
+	c := &controllerV1{server: &Server{}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+
+	c.handleError(rec, req, context.Canceled)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 // TestPostAgent_DetachesRequestContext verifies that the dispatched run
