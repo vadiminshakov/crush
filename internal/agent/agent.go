@@ -305,7 +305,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// (the pubsub broker fan-in does not serialize publishes from
 	// different upstream brokers).
 	defer func() {
-		if flushErr := a.messages.FlushAll(ctx); flushErr != nil {
+		// Use a context detached from the run context: workspace
+		// shutdown cancels ctx before this goroutine returns, but the
+		// buffered streaming deltas must still land before the DB is
+		// closed. A short timeout bounds the flush.
+		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer flushCancel()
+		if flushErr := a.messages.FlushAll(flushCtx); flushErr != nil {
 			slog.Error("Failed to flush pending message updates after run", "error", flushErr)
 		}
 		if skipRunComplete {
@@ -577,11 +583,20 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		if currentAssistant == nil {
 			return result, err
 		}
+		// Persist final state with a context detached from the run
+		// context. The run context (ctx) is derived from the
+		// workspace context, which workspace shutdown cancels before
+		// agent goroutines finish; using ctx here would drop the
+		// final assistant state. WithoutCancel keeps the values
+		// (e.g. session ID) while ignoring cancellation, and a short
+		// timeout bounds the cleanup writes.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cleanupCancel()
 		// Ensure we finish thinking on error to close the reasoning state.
 		currentAssistant.FinishThinking()
 		toolCalls := currentAssistant.ToolCalls()
-		// INFO: we use the parent context here because the genCtx has been cancelled.
-		msgs, createErr := a.messages.List(ctx, currentAssistant.SessionID)
+		// INFO: we use the cleanup context here because the genCtx has been cancelled.
+		msgs, createErr := a.messages.List(cleanupCtx, currentAssistant.SessionID)
 		if createErr != nil {
 			return nil, createErr
 		}
@@ -590,7 +605,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				tc.Finished = true
 				tc.Input = "{}"
 				currentAssistant.AddToolCall(tc)
-				updateErr := a.messages.Update(ctx, *currentAssistant)
+				updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
 				if updateErr != nil {
 					return nil, updateErr
 				}
@@ -623,7 +638,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				Content:    content,
 				IsError:    true,
 			}
-			_, createErr = a.messages.Create(ctx, currentAssistant.SessionID, message.CreateMessageParams{
+			_, createErr = a.messages.Create(cleanupCtx, currentAssistant.SessionID, message.CreateMessageParams{
 				Role: message.Tool,
 				Parts: []message.ContentPart{
 					toolResult,
@@ -670,9 +685,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		} else {
 			currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, err.Error())
 		}
-		// Note: we use the parent context here because the genCtx has been
+		// Note: we use the cleanup context here because the genCtx has been
 		// cancelled.
-		updateErr := a.messages.Update(ctx, *currentAssistant)
+		updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
 		if updateErr != nil {
 			return nil, updateErr
 		}
