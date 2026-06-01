@@ -740,9 +740,10 @@ func (c *controllerV1) handleGetWorkspaceAgent(w http.ResponseWriter, r *http.Re
 //	@Accept			json
 //	@Param			id		path	string				true	"Workspace ID"
 //	@Param			request	body	proto.AgentMessage	true	"Agent message"
-//	@Success		200
+//	@Success		202
 //	@Failure		400	{object}	proto.Error
 //	@Failure		404	{object}	proto.Error
+//	@Failure		409	{object}	proto.Error
 //	@Failure		500	{object}	proto.Error
 //	@Router			/workspaces/{id}/agent [post]
 func (c *controllerV1) handlePostWorkspaceAgent(w http.ResponseWriter, r *http.Request) {
@@ -767,7 +768,7 @@ func (c *controllerV1) handlePostWorkspaceAgent(w http.ResponseWriter, r *http.R
 		c.handleError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // handlePostWorkspaceAgentInit initializes the agent for a workspace.
@@ -1061,6 +1062,8 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		status = http.StatusBadRequest
 	case errors.Is(err, backend.ErrClientNotAttached):
 		status = http.StatusNotFound
+	case errors.Is(err, backend.ErrWorkspaceClosing):
+		status = http.StatusConflict
 	}
 	c.server.logError(r, err.Error())
 	jsonError(w, status, err.Error())

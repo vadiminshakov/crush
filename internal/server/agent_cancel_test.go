@@ -139,7 +139,7 @@ func TestPostAgent_ReturnsOKOnContextCanceled(t *testing.T) {
 	// The handler returns immediately, before the dispatched run is
 	// released, because the run no longer owns the HTTP response.
 	rec := postAgent(t, c, t.Context(), wsID, "S1")
-	require.Equal(t, http.StatusOK, rec.Code, "fire-and-forget SendMessage must return 200 without waiting for the run")
+	require.Equal(t, http.StatusAccepted, rec.Code, "fire-and-forget SendMessage must return 202 without waiting for the run")
 
 	// The run is dispatched on a goroutine; let it return
 	// context.Canceled. Nothing from that path reaches the (already
@@ -169,7 +169,7 @@ func TestPostAgent_DetachesRequestContext(t *testing.T) {
 	// The handler returns immediately; the run keeps executing on its
 	// own goroutine bound to the workspace context.
 	rec := postAgent(t, c, reqCtx, wsID, "S1")
-	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusAccepted, rec.Code)
 
 	select {
 	case <-coord.entered:
