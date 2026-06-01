@@ -706,6 +706,7 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 		n := notify.Notification{
 			SessionID:    e.Payload.SessionID,
 			SessionTitle: e.Payload.SessionTitle,
+			RunID:        e.Payload.RunID,
 			Type:         notify.Type(e.Payload.Type),
 		}
 		if e.Payload.Error != nil {

@@ -89,6 +89,7 @@ func wrapEvent(ev any) *pubsub.Payload {
 		payload := proto.AgentEvent{
 			SessionID:    e.Payload.SessionID,
 			SessionTitle: e.Payload.SessionTitle,
+			RunID:        e.Payload.RunID,
 			Type:         proto.AgentEventType(e.Payload.Type),
 		}
 		if e.Payload.Type == notify.TypeAgentError {

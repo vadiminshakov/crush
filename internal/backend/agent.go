@@ -85,6 +85,7 @@ func (b *Backend) runAgent(ws *Workspace, msg proto.AgentMessage, accept *agent.
 
 	ws.AgentNotifications().Publish(pubsub.CreatedEvent, notify.Notification{
 		SessionID: msg.SessionID,
+		RunID:     msg.RunID,
 		Type:      notify.TypeAgentError,
 		Message:   err.Error(),
 	})
