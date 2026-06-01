@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -103,10 +104,19 @@ type SessionAgentCall struct {
 	// recursion drains, so falling back to the default broker
 	// publish keeps the event visible to subscribers.
 	OnComplete func(notify.RunComplete)
+	// Accepted, when non-nil, is the accept reservation taken by
+	// BeginAccepted before the call was dispatched onto a goroutine
+	// (the client/server fire-and-forget path). Run consumes it under
+	// dispatchMu[SessionID] once the accepted -> (cancel-on-entry |
+	// queued | active) transition has been chosen. When nil
+	// (in-process / local callers like AppWorkspace), behavior is
+	// unchanged and no accept tracking applies.
+	Accepted *AcceptedRun
 }
 
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
+	BeginAccepted(sessionID string) *AcceptedRun
 	SetModels(large Model, small Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
@@ -145,6 +155,32 @@ type sessionAgent struct {
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, context.CancelFunc]
+
+	// dispatchMu holds a per-session mutex that serializes the
+	// accepted -> (cancel-on-entry | queued | active) transition in
+	// Run against a concurrent Cancel. The lock is held only during
+	// the brief handoff (no DB or LLM I/O under the lock).
+	dispatchMu *csync.Map[string, *sync.Mutex]
+	// acceptedRuns counts dispatched-but-not-yet-active runs per
+	// session. A counter > 0 means a dispatched prompt is in flight
+	// and has not yet completed the dispatch handoff in Run. Only
+	// BeginAccepted increments it; only AcceptedRun.Close decrements
+	// it.
+	acceptedRuns *csync.Map[string, int]
+	// pendingCancels records sessions whose dispatched-but-not-yet-
+	// running call should observe a cancellation request. It is only
+	// set by Cancel when acceptedRuns > 0, so an idle Escape never
+	// poisons the next prompt.
+	pendingCancels *csync.Map[string, struct{}]
+	// dispatchMuCreate guards lazy creation of per-session entries in
+	// dispatchMu so two goroutines can't race to lock different mutex
+	// instances for the same session.
+	dispatchMuCreate sync.Mutex
+	// acceptedMu serializes increments/decrements of acceptedRuns. It
+	// is separate from dispatchMu so AcceptedRun.Close (which may run
+	// while Run holds dispatchMu for the same session) does not
+	// deadlock by re-entering the dispatch lock.
+	acceptedMu sync.Mutex
 }
 
 type SessionAgentOptions struct {
@@ -180,7 +216,144 @@ func NewSessionAgent(
 		runComplete:          opts.RunComplete,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, context.CancelFunc](),
+		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
+		acceptedRuns:         csync.NewMap[string, int](),
+		pendingCancels:       csync.NewMap[string, struct{}](),
 	}
+}
+
+// AcceptedRun owns exactly one accept reservation taken by
+// BeginAccepted. It is the only carrier of accept-state across the
+// backend.runAgent / Coordinator.Run / sessionAgent.Run layers: a
+// counter > 0 means a dispatched prompt is in flight and has not yet
+// completed the dispatch handoff in Run. Close is the only way to
+// release the reservation and is idempotent.
+type AcceptedRun struct {
+	agent     *sessionAgent
+	sessionID string
+	done      atomic.Bool
+}
+
+// Close decrements the accept counter for this reservation. It is safe
+// to call multiple times; only the first call has effect.
+func (r *AcceptedRun) Close() {
+	if r == nil {
+		return
+	}
+	if !r.done.CompareAndSwap(false, true) {
+		return
+	}
+	r.agent.endAccepted(r.sessionID)
+}
+
+// SessionID exposes the session this reservation is for so the run path
+// can use it without an extra parameter.
+func (r *AcceptedRun) SessionID() string {
+	if r == nil {
+		return ""
+	}
+	return r.sessionID
+}
+
+// BeginAccepted increments the accept counter for sessionID and returns
+// a handle whose Close is the only way to decrement it. It is the only
+// entry point that mutates acceptedRuns.
+func (a *sessionAgent) BeginAccepted(sessionID string) *AcceptedRun {
+	a.acceptedMu.Lock()
+	defer a.acceptedMu.Unlock()
+	count, _ := a.acceptedRuns.Get(sessionID)
+	a.acceptedRuns.Set(sessionID, count+1)
+	return &AcceptedRun{agent: a, sessionID: sessionID}
+}
+
+// endAccepted decrements the accept counter for sessionID. It is only
+// called via AcceptedRun.Close. It uses a dedicated lock (not the
+// per-session dispatch mutex) so it can run while Run holds dispatchMu
+// for the same session without deadlocking.
+func (a *sessionAgent) endAccepted(sessionID string) {
+	a.acceptedMu.Lock()
+	defer a.acceptedMu.Unlock()
+	count, ok := a.acceptedRuns.Get(sessionID)
+	if !ok || count <= 1 {
+		a.acceptedRuns.Del(sessionID)
+		return
+	}
+	a.acceptedRuns.Set(sessionID, count-1)
+}
+
+// sessionMu returns the per-session dispatch mutex, creating it on first
+// use. Creation is guarded so concurrent callers always observe the same
+// mutex instance for a given session.
+func (a *sessionAgent) sessionMu(sessionID string) *sync.Mutex {
+	if mu, ok := a.dispatchMu.Get(sessionID); ok {
+		return mu
+	}
+	a.dispatchMuCreate.Lock()
+	defer a.dispatchMuCreate.Unlock()
+	if mu, ok := a.dispatchMu.Get(sessionID); ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	a.dispatchMu.Set(sessionID, mu)
+	return mu
+}
+
+// enqueueCall appends call to the session's message queue. The
+// OnComplete hook is stripped: the caller that supplied it (typically
+// coordinator.Run) has its own retry/coalesce scope that ends when it
+// returns, so by the time the queue drains nobody is left to consume the
+// buffered terminal event. The recursive Run falls back to the default
+// broker publish, which is what existing subscribers expect for queued
+// turns.
+func (a *sessionAgent) enqueueCall(call SessionAgentCall) {
+	existing, ok := a.messageQueue.Get(call.SessionID)
+	if !ok {
+		existing = []SessionAgentCall{}
+	}
+	queued := call
+	queued.OnComplete = nil
+	queued.Accepted = nil
+	existing = append(existing, queued)
+	a.messageQueue.Set(call.SessionID, existing)
+}
+
+// clearPendingCancel removes any pending-cancel record for sessionID. It
+// takes the per-session dispatch lock so it is ordered against Cancel and
+// the dispatch handoff.
+func (a *sessionAgent) clearPendingCancel(sessionID string) {
+	mu := a.sessionMu(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+	a.pendingCancels.Del(sessionID)
+}
+
+// persistCanceledTurn writes the user/assistant records for a turn that
+// was canceled before (or just as) streaming would have produced them.
+// It creates the user message only when it was not already created by an
+// earlier createUserMessage call (userMsgCreated), then writes an
+// assistant message with FinishReasonCanceled. Both writes use
+// context.WithoutCancel(ctx) so workspace shutdown (which cancels the run
+// context) can't drop them.
+func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgentCall, userMsgCreated bool) error {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if !userMsgCreated {
+		if _, err := a.createUserMessage(writeCtx, call); err != nil {
+			return err
+		}
+	}
+	largeModel := a.largeModel.Get()
+	assistant, err := a.messages.Create(writeCtx, call.SessionID, message.CreateMessageParams{
+		Role:     message.Assistant,
+		Parts:    []message.ContentPart{},
+		Model:    largeModel.ModelCfg.Model,
+		Provider: largeModel.ModelCfg.Provider,
+	})
+	if err != nil {
+		return err
+	}
+	assistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+	return a.messages.Update(writeCtx, assistant)
 }
 
 // ValidateCall performs the cheap structural validation that
@@ -204,22 +377,73 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, err
 	}
 
-	// Queue the message if busy. Strip OnComplete: the caller that
-	// supplied the hook (typically coordinator.Run) has its own
-	// retry/coalesce scope that ends when it returns, so by the time
-	// the queue drains nobody is left to consume the buffered
-	// terminal event. The recursive Run will fall back to the
-	// default broker publish, which is what existing subscribers
-	// expect for queued turns.
-	if a.IsSessionBusy(call.SessionID) {
-		existing, ok := a.messageQueue.Get(call.SessionID)
-		if !ok {
-			existing = []SessionAgentCall{}
+	// genCtx/cancel are the run context and its cancel func. For the
+	// accepted (fire-and-forget) dispatch path they are created under
+	// dispatchMu below so a concurrent Cancel can observe the
+	// activeRequests entry before the assistant message exists. For
+	// the in-process path they stay nil here and are created later,
+	// preserving the original ordering.
+	var (
+		genCtx           context.Context
+		cancel           context.CancelFunc
+		activeRegistered bool
+		userMsgCreated   bool
+	)
+
+	if call.Accepted != nil {
+		// Serialize the accepted -> (cancel-on-entry | queued |
+		// active) transition against a concurrent Cancel. Cancel takes
+		// the same per-session lock, so every cancel observes at least
+		// one of: pendingCancels, an activeRequests entry, or a
+		// messageQueue entry it then clears.
+		mu := a.sessionMu(call.SessionID)
+		mu.Lock()
+
+		if _, pending := a.pendingCancels.Get(call.SessionID); pending {
+			// Cancel-on-entry: a cancel arrived while this run was
+			// dispatched but not yet active. Consume the pending
+			// cancel, release the accept reservation, drop the lock,
+			// and persist a canceled turn without entering Stream.
+			a.pendingCancels.Del(call.SessionID)
+			call.Accepted.Close()
+			mu.Unlock()
+			if err := a.persistCanceledTurn(ctx, call, false); err != nil {
+				return nil, err
+			}
+			return nil, nil
 		}
-		queued := call
-		queued.OnComplete = nil
-		existing = append(existing, queued)
-		a.messageQueue.Set(call.SessionID, existing)
+
+		if a.IsSessionBusy(call.SessionID) {
+			// Busy: an earlier prompt is active. Queue this call and
+			// release the accept reservation. A Cancel arriving after
+			// this point sees the active entry and clears the queue.
+			a.enqueueCall(call)
+			call.Accepted.Close()
+			mu.Unlock()
+			return nil, nil
+		}
+
+		// Idle: become the active run. Register the cancel func before
+		// dropping the lock so a Cancel that arrives between here and
+		// assistant creation is not lost.
+		runCtx := context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
+		genCtx, cancel = context.WithCancel(runCtx)
+		a.activeRequests.Set(call.SessionID, cancel)
+		activeRegistered = true
+		call.Accepted.Close()
+		mu.Unlock()
+
+		defer cancel()
+		defer a.activeRequests.Del(call.SessionID)
+	} else if a.IsSessionBusy(call.SessionID) {
+		// Queue the message if busy. Strip OnComplete: the caller that
+		// supplied the hook (typically coordinator.Run) has its own
+		// retry/coalesce scope that ends when it returns, so by the time
+		// the queue drains nobody is left to consume the buffered
+		// terminal event. The recursive Run will fall back to the
+		// default broker publish, which is what existing subscribers
+		// expect for queued turns.
+		a.enqueueCall(call)
 		return nil, nil
 	}
 
@@ -282,15 +506,22 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if err != nil {
 		return nil, err
 	}
+	userMsgCreated = true
 
 	// Add the session to the context.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 
-	genCtx, cancel := context.WithCancel(ctx)
-	a.activeRequests.Set(call.SessionID, cancel)
+	// For the accepted dispatch path the run context and cancel func
+	// were already created and registered under dispatchMu above; reuse
+	// them. For the in-process path create them here, preserving the
+	// original ordering.
+	if !activeRegistered {
+		genCtx, cancel = context.WithCancel(ctx)
+		a.activeRequests.Set(call.SessionID, cancel)
 
-	defer cancel()
-	defer a.activeRequests.Del(call.SessionID)
+		defer cancel()
+		defer a.activeRequests.Del(call.SessionID)
+	}
 	// skipRunComplete is set just before the queued-recursion path so
 	// the outer Run doesn't publish a RunComplete that would race
 	// with — and be superseded by — the recursive call's own
@@ -390,14 +621,24 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// Use latest tools (updated by SetTools when MCP tools change).
 			prepared.Tools = a.tools.Copy()
 
+			// Drain queued follow-up prompts, but skip them if a cancel
+			// was recorded for the session while they sat in the queue:
+			// a cancel that arrived after the queue insertion must not
+			// let the queued prompt run as part of this step.
+			dispatchLock := a.sessionMu(call.SessionID)
+			dispatchLock.Lock()
+			_, canceled := a.pendingCancels.Get(call.SessionID)
 			queuedCalls, _ := a.messageQueue.Get(call.SessionID)
 			a.messageQueue.Del(call.SessionID)
-			for _, queued := range queuedCalls {
-				userMessage, createErr := a.createUserMessage(callContext, queued)
-				if createErr != nil {
-					return callContext, prepared, createErr
+			dispatchLock.Unlock()
+			if !canceled {
+				for _, queued := range queuedCalls {
+					userMessage, createErr := a.createUserMessage(callContext, queued)
+					if createErr != nil {
+						return callContext, prepared, createErr
+					}
+					prepared.Messages = append(prepared.Messages, userMessage.ToAIMessage()...)
 				}
-				prepared.Messages = append(prepared.Messages, userMessage.ToAIMessage()...)
 			}
 
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
@@ -594,6 +835,18 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		isHyper := largeModel.ModelCfg.Provider == hyper.Name
 		isCancelErr := errors.Is(err, context.Canceled)
 		if currentAssistant == nil {
+			// Cancel-before-assistant-creation window: the run was
+			// canceled after activeRequests.Set but before PrepareStep
+			// created the assistant message. Without this, the turn
+			// would return with no FinishReasonCanceled marker and no
+			// user-visible record. The user message was already created
+			// above, so persistCanceledTurn only writes the assistant
+			// record.
+			if isCancelErr {
+				if persistErr := a.persistCanceledTurn(ctx, call, userMsgCreated); persistErr != nil {
+					return nil, persistErr
+				}
+			}
 			return result, err
 		}
 		// Persist final state with a context detached from the run
@@ -741,8 +994,35 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		})
 	}
 
+	// Hand off to the next queued prompt (if any) under dispatchMu so
+	// the transition from this finished run to the queued run is atomic
+	// against a concurrent Cancel. activeRequests for this session was
+	// just deleted above, so without the lock there is a window in
+	// which the session looks idle and a cancel becomes a no-op that
+	// fails to stop the queued prompt. Holding the lock lets us observe
+	// a pending cancel recorded against the session and drop the queue
+	// instead of running it, and (for the recursion) hand a fresh
+	// accept reservation to the dequeued call so acceptedRuns stays > 0
+	// across the recursive Run's own dispatch handoff — keeping the
+	// session observable to Cancel for the entire transition and
+	// closing the dequeue -> re-register window.
+	mu := a.sessionMu(call.SessionID)
+	mu.Lock()
+	if _, pending := a.pendingCancels.Get(call.SessionID); pending {
+		// A cancel was recorded for this session (e.g. it arrived while
+		// this run was active and a follow-up had been accepted). Drop
+		// the queue instead of running it and consume the marker.
+		a.pendingCancels.Del(call.SessionID)
+		a.messageQueue.Del(call.SessionID)
+		mu.Unlock()
+		return result, err
+	}
 	queuedMessages, ok := a.messageQueue.Get(call.SessionID)
 	if !ok || len(queuedMessages) == 0 {
+		// No queued work. Clear any stale pending-cancel entry as a
+		// safety net so it can't catch a future run (no-op when unset).
+		a.pendingCancels.Del(call.SessionID)
+		mu.Unlock()
 		return result, err
 	}
 	// There are queued messages restart the loop. The recursive Run
@@ -753,6 +1033,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	skipRunComplete = true
 	firstQueuedMessage := queuedMessages[0]
 	a.messageQueue.Set(call.SessionID, queuedMessages[1:])
+	// Reserve a fresh accept for the dequeued prompt before dropping the
+	// lock so acceptedRuns > 0 across the handoff into the recursive
+	// Run. This closes the window between this dequeue and the recursive
+	// Run registering its activeRequests entry: a cancel arriving in
+	// that window now records a pending cancel (acceptedRuns > 0) that
+	// the recursive Run's accepted path observes as cancel-on-entry.
+	firstQueuedMessage.Accepted = a.BeginAccepted(call.SessionID)
+	mu.Unlock()
 	return a.Run(ctx, firstQueuedMessage)
 }
 
@@ -1305,6 +1593,16 @@ func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message
 }
 
 func (a *sessionAgent) Cancel(sessionID string) {
+	// Serialize against the dispatch handoff in Run so the accepted ->
+	// (cancel-on-entry | queued | active) transition is atomic against
+	// this cancel. Every cancel observes at least one of: an active
+	// request, an accepted run (recorded as a pending cancel), or a
+	// queue entry it then clears. If none of those hold, an idle Escape
+	// is a true no-op and must not poison the next prompt.
+	mu := a.sessionMu(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Cancel regular requests. Don't use Take() here - we need the entry to
 	// remain in activeRequests so IsBusy() returns true until the goroutine
 	// fully completes (including error handling that may access the DB).
@@ -1318,6 +1616,20 @@ func (a *sessionAgent) Cancel(sessionID string) {
 	if cancel, ok := a.activeRequests.Get(sessionID + "-summarize"); ok && cancel != nil {
 		slog.Debug("Summarize cancellation initiated", "session_id", sessionID)
 		cancel()
+	}
+
+	// Record a pending cancel only when a dispatched-but-not-yet-active
+	// run exists. This catches a run still in the goroutine scheduler or
+	// about to enter Run's busy-queue branch, while leaving an idle
+	// session untouched. Active and accepted are not mutually exclusive:
+	// when a run is active and a follow-up has been accepted, both the
+	// cancel above and this pending record fire.
+	a.acceptedMu.Lock()
+	count, ok := a.acceptedRuns.Get(sessionID)
+	a.acceptedMu.Unlock()
+	if ok && count > 0 {
+		slog.Debug("Recording pending cancel for accepted run", "session_id", sessionID)
+		a.pendingCancels.Set(sessionID, struct{}{})
 	}
 
 	if a.QueuedPrompts(sessionID) > 0 {

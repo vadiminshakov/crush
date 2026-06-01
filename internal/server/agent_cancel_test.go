@@ -60,6 +60,13 @@ func (s *runCoordinator) Run(ctx context.Context, sessionID, prompt string, atta
 	return nil, s.returnFn(ctx)
 }
 
+func (s *runCoordinator) RunAccepted(ctx context.Context, accept *agent.AcceptedRun, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return s.Run(ctx, sessionID, prompt, attachments...)
+}
+
+func (s *runCoordinator) BeginAccepted(sessionID string) *agent.AcceptedRun {
+	return nil
+}
 func (s *runCoordinator) Cancel(string) {}
 func (s *runCoordinator) CancelAll()    {}
 func (s *runCoordinator) IsBusy() bool  { return false }
