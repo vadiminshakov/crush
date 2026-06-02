@@ -294,6 +294,11 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 
 	if hasLatest && c.runComplete != nil {
 		c.runComplete.PublishMustDeliver(ctx, pubsub.UpdatedEvent, latest)
+		// Signal to the dispatcher (backend.runAgent) that the
+		// authoritative terminal RunComplete for this run was already
+		// emitted, so it does not publish a duplicate fallback for the
+		// error it is about to receive.
+		MarkRunCompletePublished(ctx)
 	}
 	return result, originalErr
 }

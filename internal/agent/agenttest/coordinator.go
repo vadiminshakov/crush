@@ -57,6 +57,7 @@ func NewCoordinator(
 	selected := config.SelectedModel{Provider: providerID, Model: modelID}
 	cfg.Config().Models[config.SelectedModelTypeLarge] = selected
 	cfg.Config().Models[config.SelectedModelTypeSmall] = selected
+	cfg.SetupAgents()
 
 	// Keep buildTools light: no sub-agent or agentic-fetch construction.
 	coderCfg := cfg.Config().Agents[config.AgentCoder]

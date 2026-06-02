@@ -61,14 +61,27 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 // runAgent executes an accepted agent run for the workspace. It owns the
 // accept reservation (releasing it on return) and the runWG ticket added
 // by SendMessage. The run is bound to the workspace context so its
-// lifetime is independent of any client's HTTP request. On a non-cancel
-// error it surfaces the failure to observers via a notify.TypeAgentError
-// notification; context.Canceled is expected (the FinishReasonCanceled
-// marker is already published by sessionAgent.Run) and swallowed.
+// lifetime is independent of any client's HTTP request.
+//
+// On a non-cancel error it surfaces the failure to observers via a
+// notify.TypeAgentError notification (lossy, best-effort). That alone is
+// not a reliable terminal signal: the agent-event fan-in uses lossy
+// subscribers, so a `crush run` caller blocking on its RunID could hang
+// if the event is dropped. To guarantee termination, when msg.RunID is
+// non-empty and the coordinator did not already publish the run's
+// authoritative terminal RunComplete (e.g. the error was returned before
+// sessionAgent.Run executed, such as a readyWg or UpdateModels failure),
+// runAgent emits an errored RunComplete on the must-deliver
+// runCompletions broker so the waiter observes a deterministic terminal
+// event. context.Canceled is expected (sessionAgent.Run already
+// publishes the cancelled terminal marker) and produces no error
+// terminal event.
 //
 // When msg.RunID is non-empty it is attached to the context via
 // agent.WithRunID so the coordinator can stamp the terminal
-// notify.RunComplete event with that correlator.
+// notify.RunComplete event with that correlator. A run-complete marker
+// is also attached so the coordinator can report whether it published
+// the terminal event, letting runAgent avoid a duplicate fallback.
 func (b *Backend) runAgent(ws *Workspace, msg proto.AgentMessage, accept *agent.AcceptedRun) {
 	defer ws.runWG.Done()
 	defer accept.Close()
@@ -77,6 +90,7 @@ func (b *Backend) runAgent(ws *Workspace, msg proto.AgentMessage, accept *agent.
 	if msg.RunID != "" {
 		ctx = agent.WithRunID(ctx, msg.RunID)
 	}
+	ctx = agent.WithRunCompleteMarker(ctx)
 
 	_, err := ws.AgentCoordinator.RunAccepted(ctx, accept, msg.SessionID, msg.Prompt, proto.AttachmentsToMessage(msg.Attachments)...)
 	if err == nil || errors.Is(err, context.Canceled) {
@@ -89,6 +103,20 @@ func (b *Backend) runAgent(ws *Workspace, msg proto.AgentMessage, accept *agent.
 		Type:      notify.TypeAgentError,
 		Message:   err.Error(),
 	})
+
+	// Reliable terminal fallback. Only needed when a RunID waiter
+	// exists and the coordinator has not already emitted the run's
+	// terminal RunComplete; otherwise this would be a duplicate.
+	if msg.RunID == "" || agent.RunCompletePublished(ctx) {
+		return
+	}
+	if rc := ws.RunCompletions(); rc != nil {
+		rc.PublishMustDeliver(ctx, pubsub.UpdatedEvent, notify.RunComplete{
+			SessionID: msg.SessionID,
+			RunID:     msg.RunID,
+			Error:     err.Error(),
+		})
+	}
 }
 
 // GetAgentInfo returns the agent's model and busy status.
