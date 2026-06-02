@@ -359,6 +359,30 @@ func (a *sessionAgent) enqueueCall(call SessionAgentCall) {
 	a.messageQueue.Set(call.SessionID, existing)
 }
 
+// drainUncanceledQueue copies and clears the session's message queue and
+// returns the queued calls not covered by a pending cancel. The queue
+// copy/delete and the cancel-mark check happen under the per-session
+// dispatch mutex so the filtering is atomic against a concurrent Cancel:
+// canceledBySeq requires the caller to hold that mutex, and evaluating it
+// here (rather than after unlocking) prevents a cancel recorded between
+// the drain and the check from being observed inconsistently. The
+// returned survivors are processed by the caller without the lock held.
+func (a *sessionAgent) drainUncanceledQueue(sessionID string) []SessionAgentCall {
+	dispatchLock := a.sessionMu(sessionID)
+	dispatchLock.Lock()
+	defer dispatchLock.Unlock()
+	queuedCalls, _ := a.messageQueue.Get(sessionID)
+	a.messageQueue.Del(sessionID)
+	survivors := queuedCalls[:0]
+	for _, queued := range queuedCalls {
+		if a.canceledBySeq(sessionID, queued.acceptSeq) {
+			continue
+		}
+		survivors = append(survivors, queued)
+	}
+	return survivors
+}
+
 // clearPendingCancel removes any pending-cancel mark for sessionID. It
 // takes the per-session dispatch lock so it is ordered against Cancel
 // and the dispatch handoff.
@@ -717,15 +741,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// part of this step. Coverage is per-call by accept sequence
 			// so a follow-up queued after the cancel (higher seq) is
 			// still folded in.
-			dispatchLock := a.sessionMu(call.SessionID)
-			dispatchLock.Lock()
-			queuedCalls, _ := a.messageQueue.Get(call.SessionID)
-			a.messageQueue.Del(call.SessionID)
-			dispatchLock.Unlock()
-			for _, queued := range queuedCalls {
-				if a.canceledBySeq(call.SessionID, queued.acceptSeq) {
-					continue
-				}
+			survivors := a.drainUncanceledQueue(call.SessionID)
+			for _, queued := range survivors {
 				userMessage, createErr := a.createUserMessage(callContext, queued)
 				if createErr != nil {
 					return callContext, prepared, createErr
