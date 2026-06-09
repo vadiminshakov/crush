@@ -600,6 +600,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.handleAgentNotification(msg.Payload); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case pubsub.Event[notify.RunComplete]:
+		if cmd := m.handlePlanHandoff(msg.Payload); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case loadSessionMsg:
 		if m.forceCompactMode {
 			m.isCompact = true
@@ -1578,6 +1582,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionQuit:
 		cmds = append(cmds, tea.Quit)
+	case dialog.ActionSwitchToCodeMode:
+		m.dialog.CloseFrontDialog()
+		cmds = append(cmds, m.setInputMode(uiInputModeCode))
 	case dialog.ActionEnableDockerMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.enableDockerMCP)
@@ -3116,10 +3123,6 @@ func (m *UI) openEditor(value string) tea.Cmd {
 // setEditorPrompt configures the textarea prompt icon based on
 // whether yolo mode is enabled.
 func (m *UI) setEditorPrompt(yolo bool, mode uiInputMode) {
-	if yolo && mode == uiInputModePlan {
-		m.textarea.SetPromptFunc(4, m.yoloPlanPromptFunc)
-		return
-	}
 	if yolo {
 		m.textarea.SetPromptFunc(4, m.yoloPromptFunc)
 		return
@@ -3161,29 +3164,35 @@ func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
 }
 
 func (m *UI) toggleInputMode() tea.Cmd {
-	targetMode := uiInputModePlan
-	targetAgentID := config.AgentPlan
-	targetModeLabel := "plan"
+	target := uiInputModePlan
 	if m.mode == uiInputModePlan {
-		targetMode = uiInputModeCode
-		targetAgentID = config.AgentCoder
-		targetModeLabel = "code"
+		target = uiInputModeCode
+	}
+	return m.setInputMode(target)
+}
+
+func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
+	label := "plan"
+	agentID := config.AgentPlan
+	if target == uiInputModeCode {
+		label = "code"
+		agentID = config.AgentCoder
 	}
 
-	m.mode = targetMode
+	m.mode = target
 	m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests(), m.mode)
 	if m.status != nil {
 		m.status.SetMode(m.mode == uiInputModePlan)
 	}
 
 	return func() tea.Msg {
-		if err := m.com.Workspace.AgentSetMain(targetAgentID); err != nil {
+		if err := m.com.Workspace.AgentSetMain(agentID); err != nil {
 			return util.ReportError(err)()
 		}
 		if err := m.com.Workspace.UpdateAgentModel(context.Background()); err != nil {
 			return util.ReportError(err)()
 		}
-		return util.NewInfoMsg("input mode: " + targetModeLabel)
+		return util.NewInfoMsg("input mode: " + label)
 	}
 }
 
@@ -3764,6 +3773,30 @@ func (m *UI) handlePermissionNotification(notification permission.PermissionNoti
 			m.dialog.CloseDialog(dialog.PermissionsID)
 		}
 	}
+}
+
+const planReadyMarker = "<!-- CRUSH_PLAN_READY -->"
+
+// handlePlanHandoff checks whether a completed run in plan mode contained the
+// plan-ready sentinel marker and, if so, opens the plan handoff dialog.
+func (m *UI) handlePlanHandoff(rc notify.RunComplete) tea.Cmd {
+	if m.mode != uiInputModePlan {
+		return nil
+	}
+	if rc.Error != "" || rc.Cancelled {
+		return nil
+	}
+	if m.session == nil || rc.SessionID != m.session.ID {
+		return nil
+	}
+	if !strings.Contains(rc.Text, planReadyMarker) {
+		return nil
+	}
+	if m.dialog.ContainsDialog(dialog.PlanHandoffID) {
+		return nil
+	}
+	m.dialog.OpenDialogWithGrace(dialog.NewPlanHandoff(m.com))
+	return nil
 }
 
 // handleAgentNotification translates domain agent events into desktop
