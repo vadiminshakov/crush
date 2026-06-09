@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/dialog"
+	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
@@ -119,6 +120,23 @@ type testWorkspace struct {
 	cfg               *config.Config
 	setMainCalledWith string
 	updateCalls       int
+	agentReady        bool
+	agentBusy         bool
+}
+
+func (w *testWorkspace) AgentIsReady() bool {
+	return w.agentReady
+}
+
+func (w *testWorkspace) AgentIsBusy() bool {
+	return w.agentBusy
+}
+
+func (w *testWorkspace) AgentReadyErr() error {
+	if !w.agentReady {
+		return workspace.ErrAgentNotInitialized
+	}
+	return nil
 }
 
 func (w *testWorkspace) Config() *config.Config {
@@ -129,9 +147,6 @@ func (w *testWorkspace) WorkingDir() string {
 	return "/tmp/crush-test"
 }
 
-func (w *testWorkspace) AgentIsReady() bool {
-	return false
-}
 func (w *testWorkspace) AgentSetMain(agentID string) error {
 	w.setMainCalledWith = agentID
 	return nil
@@ -336,4 +351,117 @@ func TestSetInputMode_SwitchesToPlan(t *testing.T) {
 	u.setInputMode(uiInputModePlan)()
 	require.Equal(t, uiInputModePlan, u.mode)
 	require.Equal(t, config.AgentPlan, ws.setMainCalledWith)
+}
+
+func TestToggleInputMode_BlockedWhileAgentBusy(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	ws.agentReady = true
+	ws.agentBusy = true
+	// isAgentBusy reads the memoized cache, so seed it with the same value
+	// the workspace stub reports.
+	u.agentBusyCache.set(true)
+
+	msg := u.toggleInputMode()()
+	require.Equal(t, uiInputModePlan, u.mode, "mode must not change while the agent is busy")
+	require.Empty(t, ws.setMainCalledWith)
+	info, ok := msg.(util.InfoMsg)
+	require.True(t, ok)
+	require.Equal(t, util.InfoTypeWarn, info.Type)
+}
+
+func TestSetInputMode_TracksModeSwitching(t *testing.T) {
+	t.Parallel()
+	u, _ := newPlanUI(t, "sess-1")
+
+	cmd := u.setInputMode(uiInputModeCode)
+	require.True(t, u.modeSwitching, "flag must be set until the async model update completes")
+
+	msg, ok := cmd().(modeSwitchedMsg)
+	require.True(t, ok)
+	require.NoError(t, msg.err)
+	require.Equal(t, "code", msg.label)
+}
+
+func TestHandlePlanHandoff_SetsPendingPlan(t *testing.T) {
+	t.Parallel()
+	u, _ := newPlanUI(t, "sess-1")
+	u.handlePlanHandoff(notify.RunComplete{
+		SessionID: "sess-1",
+		Text:      "plan\n<!-- CRUSH_PLAN_READY -->",
+	})
+	require.Equal(t, "sess-1", u.planReadySessionID)
+}
+
+func TestHandlePlanHandoff_DismissKeepsPendingAndReopens(t *testing.T) {
+	t.Parallel()
+	u, _ := newPlanUI(t, "sess-1")
+	u.handlePlanHandoff(notify.RunComplete{
+		SessionID: "sess-1",
+		Text:      "plan\n<!-- CRUSH_PLAN_READY -->",
+	})
+	require.True(t, isPlanHandoffInline(u))
+
+	// "Keep editing" dismisses the inline prompt but keeps the plan pending.
+	u.activeInline = nil
+	require.Equal(t, "sess-1", u.planReadySessionID)
+
+	// Enter on an empty editor reopens the prompt via openPlanHandoff.
+	u.openPlanHandoff()
+	require.True(t, isPlanHandoffInline(u))
+}
+
+func TestPlanHandoffConfirm_ClearsPendingAndSwitchesMode(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	ws.agentReady = true
+	u.handlePlanHandoff(notify.RunComplete{
+		SessionID: "sess-1",
+		Text:      "plan\n<!-- CRUSH_PLAN_READY -->",
+	})
+	inline, ok := u.activeInline.(*dialog.PlanHandoffInline)
+	require.True(t, ok)
+
+	cmd := inline.OnConfirm()
+	require.NotNil(t, cmd)
+	require.Equal(t, uiInputModeCode, u.mode)
+	require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
+	require.Empty(t, u.planReadySessionID)
+}
+
+func TestSendMessage_ClearsPendingPlan(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	ws.agentReady = true
+	u.setPlanReadyPending("sess-1")
+
+	cmd := u.sendMessage("a new prompt that supersedes the plan")
+	require.NotNil(t, cmd)
+	require.Empty(t, u.planReadySessionID)
+}
+
+func TestResetPlanModeState(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	u.setPlanReadyPending("sess-1")
+	u.openPlanHandoff()
+	require.True(t, isPlanHandoffInline(u))
+
+	cmd := u.resetPlanModeState()
+	require.NotNil(t, cmd)
+	require.Equal(t, uiInputModeCode, u.mode)
+	require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
+	require.Empty(t, u.planReadySessionID)
+	require.Nil(t, u.activeInline)
+}
+
+func TestResetPlanModeState_NoopInCodeMode(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	u.mode = uiInputModeCode
+
+	cmd := u.resetPlanModeState()
+	require.Nil(t, cmd)
+	require.Equal(t, uiInputModeCode, u.mode)
+	require.Empty(t, ws.setMainCalledWith)
 }
