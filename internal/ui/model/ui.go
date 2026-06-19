@@ -111,6 +111,12 @@ type openEditorMsg struct {
 	Text string
 }
 
+type shellResultMsg struct {
+	Command  string
+	Output   string
+	ExitCode int
+}
+
 type (
 	// cancelTimerExpiredMsg is sent when the cancel timer expires.
 	cancelTimerExpiredMsg struct{}
@@ -191,6 +197,10 @@ type UI struct {
 
 	// isCanceling tracks whether the user has pressed escape once to cancel.
 	isCanceling bool
+
+	// bangMode tracks whether the editor is in bang (!) shell mode.
+	bangMode     bool
+	bangWasEmpty bool // true when bang prompt became empty on last keystroke
 
 	header *header
 
@@ -866,6 +876,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// others send DeltaY=1.
 		switch m.state {
 		case uiChat:
+			if msg.DeltaX != 0 {
+				m.chat.ScrollSelectedShellHorizontal(int(msg.DeltaX))
+			}
 			lines := int(msg.DeltaY)
 			if lines == 0 {
 				break
@@ -926,6 +939,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetValue(msg.Text)
 		m.textarea.MoveToEnd()
 		cmds = append(cmds, m.updateTextareaWithPrevHeight(msg, prevHeight))
+	case shellResultMsg:
+		item := chat.NewShellItem(m.com.Styles, msg.Command, msg.Output, msg.ExitCode)
+		m.chat.AppendMessages(item)
+		if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case hyperRefreshDoneMsg:
 		if cmd := m.handleSelectModel(msg.action); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -979,12 +998,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case uiFocusMain:
 	case uiFocusEditor:
 		// Textarea placeholder logic
-		if m.isAgentBusy() {
+		if m.bangMode {
+			m.textarea.Placeholder = "Run a shell command"
+		} else if m.isAgentBusy() {
 			m.textarea.Placeholder = m.workingPlaceholder
 		} else {
 			m.textarea.Placeholder = m.readyPlaceholder
 		}
-		if m.com.Workspace.PermissionSkipRequests() {
+		if !m.bangMode && m.com.Workspace.PermissionSkipRequests() {
 			m.textarea.Placeholder = "Yolo mode!"
 		}
 	}
@@ -1118,6 +1139,18 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 
 	switch msg.Role {
 	case message.User:
+		// Shell commands are rendered live via shellResultMsg; skip
+		// the persisted duplicate.
+		hasShellCmd := false
+		for _, part := range msg.Parts {
+			if _, ok := part.(message.ShellCommand); ok {
+				hasShellCmd = true
+				break
+			}
+		}
+		if hasShellCmd {
+			return nil
+		}
 		m.lastUserMessageTime = msg.CreatedAt
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil)
 		for _, item := range items {
@@ -1972,6 +2005,15 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					return m.openQuitDialog()
 				}
 
+				if m.bangMode && value != "" {
+					m.bangMode = false
+					yolo := m.com.Workspace.PermissionSkipRequests()
+					m.setEditorPrompt(yolo)
+					m.randomizePlaceholders()
+					m.historyReset()
+					return tea.Batch(m.runShellCommand(value), m.loadPromptHistory())
+				}
+
 				attachments := m.attachments.List()
 				m.attachments.Reset()
 				if len(value) == 0 && !message.ContainsTextAttachment(attachments) {
@@ -2036,6 +2078,15 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					break
 				}
 
+				// Bang mode: backspace on already-empty prompt exits.
+				if m.bangMode && m.bangWasEmpty && msg.Code == tea.KeyBackspace {
+					m.bangMode = false
+					m.bangWasEmpty = false
+					yolo := m.com.Workspace.PermissionSkipRequests()
+					m.setEditorPrompt(yolo)
+					break
+				}
+
 				// Check for @ trigger before passing to textarea.
 				curValue := m.textarea.Value()
 				curIdx := len(curValue)
@@ -2061,6 +2112,22 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 
 				prevHeight := m.textarea.Height()
 				cmds = append(cmds, m.updateTextareaWithPrevHeight(msg, prevHeight))
+
+				// Bang mode: enter when "!" typed on empty prompt, exit on
+				// backspace clearing the last character.
+				newVal := m.textarea.Value()
+				if !m.bangMode && strings.TrimSpace(newVal) == "!" {
+					m.bangMode = true
+					m.bangWasEmpty = true
+					m.textarea.Reset()
+					yolo := m.com.Workspace.PermissionSkipRequests()
+					m.setEditorPrompt(yolo)
+				} else if m.bangMode && newVal == "" && curValue != "" {
+					// Just cleared last character; mark empty, stay in bang mode.
+					m.bangWasEmpty = true
+				} else if m.bangMode && newVal != "" {
+					m.bangWasEmpty = false
+				}
 
 				// Any text modification becomes the current draft.
 				m.updateHistoryDraft(curValue)
@@ -2942,8 +3009,12 @@ func (m *UI) openEditor(value string) tea.Cmd {
 }
 
 // setEditorPrompt configures the textarea prompt function based on whether
-// yolo mode is enabled.
+// yolo mode or bang mode is enabled.
 func (m *UI) setEditorPrompt(yolo bool) {
+	if m.bangMode {
+		m.textarea.SetPromptFunc(4, m.bangPromptFunc)
+		return
+	}
 	if yolo {
 		m.textarea.SetPromptFunc(4, m.yoloPromptFunc)
 		return
@@ -2982,6 +3053,22 @@ func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
 		return t.Editor.PromptYoloDotsFocused.Render()
 	}
 	return t.Editor.PromptYoloDotsBlurred.Render()
+}
+
+// bangPromptFunc returns the bang mode editor prompt style with Turtle-colored
+// icon and dots.
+func (m *UI) bangPromptFunc(info textarea.PromptInfo) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return t.Editor.PromptBangIconFocused.Render()
+		}
+		return t.Editor.PromptBangIconBlurred.Render()
+	}
+	if info.Focused {
+		return t.Editor.PromptBangDotsFocused.Render()
+	}
+	return t.Editor.PromptBangDotsBlurred.Render()
 }
 
 // closeCompletions closes the completions popup and resets state.
@@ -3291,6 +3378,44 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 			}
 		}
 		return nil
+	})
+	return tea.Batch(cmds...)
+}
+
+// runShellCommand executes a shell command server-side without triggering
+// the LLM. The result is displayed as a tool-style item in the chat.
+func (m *UI) runShellCommand(command string) tea.Cmd {
+	var cmds []tea.Cmd
+	if !m.hasSession() {
+		newSession, err := m.com.Workspace.CreateSession(context.Background(), "New Session")
+		if err != nil {
+			return util.ReportError(err)
+		}
+		if m.forceCompactMode {
+			m.isCompact = true
+		}
+		if newSession.ID != "" {
+			m.session = &newSession
+			cmds = append(cmds, m.loadSession(newSession.ID))
+		}
+		m.setState(uiChat, m.focus)
+	}
+
+	sessionID := m.session.ID
+	contentWidth := min(m.layout.main.Dx()-2, 120)
+	cmds = append(cmds, func() tea.Msg {
+		resp, err := m.com.Workspace.AgentRunShellCommand(context.Background(), sessionID, command, contentWidth)
+		if err != nil {
+			return util.InfoMsg{
+				Type: util.InfoTypeError,
+				Msg:  fmt.Sprintf("shell: %v", err),
+			}
+		}
+		return shellResultMsg{
+			Command:  command,
+			Output:   resp.Output,
+			ExitCode: resp.ExitCode,
+		}
 	})
 	return tea.Batch(cmds...)
 }
