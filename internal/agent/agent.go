@@ -46,6 +46,7 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 )
 
@@ -1762,7 +1763,7 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 		fallback := strings.ReplaceAll(userPrompt, "\n", " ")
 		fallback = strings.TrimSpace(fallback)
 		if len(fallback) > 50 {
-			fallback = fallback[:50]
+			fallback = ansi.Truncate(fallback, 50, "…")
 		}
 		title = cmp.Or(fallback, DefaultSessionName)
 	}
