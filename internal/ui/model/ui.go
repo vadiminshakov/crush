@@ -4995,6 +4995,9 @@ func (m *UI) openPlanHandoff() {
 			m.sendMessage("Implement the plan."),
 		)
 	}
+	inline.OnKeepEditing = func(feedback string) tea.Cmd {
+		return m.sendMessage(feedback)
+	}
 	m.activeInline = inline
 	m.textarea.Blur()
 	m.focus = uiFocusEditor
