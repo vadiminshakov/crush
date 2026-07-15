@@ -639,6 +639,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notifyWindowFocused = true
 	case tea.BlurMsg:
 		m.notifyWindowFocused = false
+	case dialog.CollapseInlineMsg:
+		m.focusActiveInline(uiFocusMain)
 	case pubsub.Event[notify.Notification]:
 		if cmd := m.handleAgentNotification(msg.Payload); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -876,6 +878,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Route clicks to inline editors that support mouse interaction.
 		if m.activeInline != nil {
+			if selectable, ok := m.activeInline.(dialog.MouseSelectableEditor); ok &&
+				selectable.HandleMouseDown(msg.X, msg.Y) {
+				return m, tea.Batch(cmds...)
+			}
 			if clickable, ok := m.activeInline.(dialog.MouseClickableEditor); ok {
 				if done, handled := clickable.HandleMouseClick(msg.X, msg.Y); handled {
 					if done {
@@ -923,6 +929,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Track hover position for inline editors.
 		if m.activeInline != nil {
+			if selectable, ok := m.activeInline.(dialog.MouseSelectableEditor); ok &&
+				selectable.HandleMouseDrag(msg.X, msg.Y) {
+				return m, tea.Batch(cmds...)
+			}
 			if m.hoverX != msg.X || m.hoverY != msg.Y {
 				m.hoverX = msg.X
 				m.hoverY = msg.Y
@@ -937,27 +947,26 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Skip chat edge-scrolling when an inline editor is
 			// active to prevent accidental scrolling while hovering
 			// over question forms or other inline components.
-			if m.activeInline != nil && m.focus == uiFocusEditor {
-				break
-			}
-			if msg.Y <= 0 {
-				if cmd := m.chat.ScrollByAndAnimate(-1); cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-				if !m.chat.SelectedItemInView() {
-					m.chat.SelectPrev()
-					if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
+			if m.activeInline == nil || m.focus != uiFocusEditor {
+				if msg.Y <= 0 {
+					if cmd := m.chat.ScrollByAndAnimate(-1); cmd != nil {
 						cmds = append(cmds, cmd)
 					}
-				}
-			} else if msg.Y >= m.chat.Height()-1 {
-				if cmd := m.chat.ScrollByAndAnimate(1); cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-				if !m.chat.SelectedItemInView() {
-					m.chat.SelectNext()
-					if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
+					if !m.chat.SelectedItemInView() {
+						m.chat.SelectPrev()
+						if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
+							cmds = append(cmds, cmd)
+						}
+					}
+				} else if msg.Y >= m.chat.Height()-1 {
+					if cmd := m.chat.ScrollByAndAnimate(1); cmd != nil {
 						cmds = append(cmds, cmd)
+					}
+					if !m.chat.SelectedItemInView() {
+						m.chat.SelectNext()
+						if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
+							cmds = append(cmds, cmd)
+						}
 					}
 				}
 			}
@@ -974,6 +983,17 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dialog.HasDialogs() {
 			m.dialog.Update(msg)
 			return m, tea.Batch(cmds...)
+		}
+
+		if m.activeInline != nil {
+			if selectable, ok := m.activeInline.(dialog.MouseSelectableEditor); ok {
+				if handled, cmd := selectable.HandleMouseRelease(msg.X, msg.Y); handled {
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+					return m, tea.Batch(cmds...)
+				}
+			}
 		}
 
 		switch m.state {
@@ -1410,19 +1430,51 @@ func (m *UI) handleClickFocus(msg tea.MouseClickMsg) (cmd tea.Cmd) {
 	case image.Pt(msg.X, msg.Y).In(m.layout.sidebar):
 		return nil
 	case m.focus != uiFocusEditor && image.Pt(msg.X, msg.Y).In(m.layout.editor):
-		m.focus = uiFocusEditor
 		if m.activeInline != nil {
-			m.activeInline.SetFocused(true)
+			m.focusActiveInline(uiFocusEditor)
 		} else {
+			m.focus = uiFocusEditor
 			cmd = m.textarea.Focus()
+			m.chat.Blur()
 		}
-		m.chat.Blur()
 	case m.focus != uiFocusMain && image.Pt(msg.X, msg.Y).In(m.layout.main):
-		m.focus = uiFocusMain
-		m.textarea.Blur()
-		m.chat.Focus()
+		if m.activeInline != nil {
+			m.focusActiveInline(uiFocusMain)
+		} else {
+			m.focus = uiFocusMain
+			m.textarea.Blur()
+			m.chat.Focus()
+		}
 	}
 	return cmd
+}
+
+// focusActiveInline moves focus between an inline editor and the chat while
+// preserving the editor and reconciling any collapsed layout.
+func (m *UI) focusActiveInline(focus uiFocusState) {
+	if m.activeInline == nil {
+		return
+	}
+
+	m.focus = focus
+	m.textarea.Blur()
+	switch focus {
+	case uiFocusEditor:
+		m.activeInline.SetFocused(true)
+		if m.chat != nil {
+			m.chat.Blur()
+		}
+	case uiFocusMain:
+		m.activeInline.SetFocused(false)
+		if m.chat != nil {
+			m.chat.Focus()
+			m.chat.SetSelected(m.chat.Len() - 1)
+		}
+	}
+
+	if m.status != nil && m.chat != nil {
+		m.updateLayoutAndSize()
+	}
 }
 
 // updateSessionMessage updates an existing message in the current session in
@@ -2152,16 +2204,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	// question form to view chat.
 	if m.activeInline != nil && key.Matches(msg, m.keyMap.Tab) {
 		if m.focus == uiFocusEditor {
-			m.focus = uiFocusMain
-			m.activeInline.SetFocused(false)
-			m.chat.Focus()
-			m.chat.SetSelected(m.chat.Len() - 1)
+			m.focusActiveInline(uiFocusMain)
 		} else {
-			m.focus = uiFocusEditor
-			m.activeInline.SetFocused(true)
-			m.chat.Blur()
+			m.focusActiveInline(uiFocusEditor)
 		}
-		m.updateLayoutAndSize()
 		return tea.Batch(cmds...)
 	}
 
@@ -2596,10 +2642,8 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 		if m.activeInline != nil {
 			m.activeInline.SetFocused(m.focus == uiFocusEditor)
-			if m.focus == uiFocusEditor {
-				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
-			} else if qf, ok := m.activeInline.(*dialog.QuestionForm); ok && m.shouldCollapseQuestion(qf) {
-				qf.DrawCollapsed(scr, layout.editor)
+			if collapsed, ok := m.collapsedInlineEditor(); ok {
+				collapsed.DrawCollapsed(scr, layout.editor)
 				m.inlineCursor = nil
 			} else {
 				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
@@ -2624,10 +2668,8 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 		if m.activeInline != nil {
 			m.activeInline.SetFocused(m.focus == uiFocusEditor)
-			if m.focus == uiFocusEditor {
-				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
-			} else if qf, ok := m.activeInline.(*dialog.QuestionForm); ok && m.shouldCollapseQuestion(qf) {
-				qf.DrawCollapsed(scr, layout.editor)
+			if collapsed, ok := m.collapsedInlineEditor(); ok {
+				collapsed.DrawCollapsed(scr, layout.editor)
 				m.inlineCursor = nil
 			} else {
 				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
@@ -2765,7 +2807,15 @@ func (m *UI) ShortHelp() []key.Binding {
 
 	// When an inline editor is active, show its help.
 	if m.activeInline != nil {
-		return m.activeInline.ShortHelp()
+		if m.focus == uiFocusEditor {
+			return m.activeInline.ShortHelp()
+		}
+		return []key.Binding{
+			m.inlineFocusHelp(),
+			k.Chat.UpDown,
+			k.Chat.PageUp,
+			k.Chat.PageDown,
+		}
 	}
 
 	tab := k.Tab
@@ -2847,7 +2897,24 @@ func (m *UI) ShortHelp() []key.Binding {
 func (m *UI) FullHelp() [][]key.Binding {
 	// When an inline editor is active, show its help.
 	if m.activeInline != nil {
-		return [][]key.Binding{m.activeInline.ShortHelp()}
+		if m.focus == uiFocusEditor {
+			return [][]key.Binding{m.activeInline.ShortHelp()}
+		}
+		return [][]key.Binding{
+			{m.inlineFocusHelp()},
+			{
+				m.keyMap.Chat.UpDown,
+				m.keyMap.Chat.UpDownOneItem,
+				m.keyMap.Chat.PageUp,
+				m.keyMap.Chat.PageDown,
+			},
+			{
+				m.keyMap.Chat.HalfPageUp,
+				m.keyMap.Chat.HalfPageDown,
+				m.keyMap.Chat.Home,
+				m.keyMap.Chat.End,
+			},
+		}
 	}
 
 	var binds [][]key.Binding
@@ -2993,6 +3060,18 @@ func (m *UI) FullHelp() [][]key.Binding {
 	return binds
 }
 
+// inlineFocusHelp returns the Tab binding used to restore a blurred inline
+// editor. Collapsible editors provide context-specific wording.
+func (m *UI) inlineFocusHelp() key.Binding {
+	tab := m.keyMap.Tab
+	description := "focus editor"
+	if collapsed, ok := m.activeInline.(dialog.CollapsibleInlineEditor); ok {
+		description = collapsed.CollapsedHelp()
+	}
+	tab.SetHelp("tab", description)
+	return tab
+}
+
 func (m *UI) currentModelSupportsImages() bool {
 	cfg := m.com.Config()
 	if cfg == nil {
@@ -3033,14 +3112,20 @@ func (m *UI) updateLayoutAndSize() {
 		}
 	}
 
-	// First pass sizes components from the current textarea height.
+	// First pass sizes components from their current heights.
+	previousInlineHeight := -1
+	if m.activeInline != nil {
+		previousInlineHeight = m.activeInline.Height(m.editorContentWidth())
+	}
 	m.layout = m.generateLayout(m.width, m.height)
 	prevHeight := m.textarea.Height()
 	m.updateSize()
 
-	// SetWidth can change textarea height due to soft-wrap recalculation.
-	// If that happens, run one reconciliation pass with the new height.
-	if m.textarea.Height() != prevHeight {
+	// SetWidth can change textarea or inline-editor height due to soft-wrap
+	// recalculation. If that happens, reconcile once with the new height.
+	inlineHeightChanged := m.activeInline != nil &&
+		m.activeInline.Height(m.editorContentWidth()) != previousInlineHeight
+	if m.textarea.Height() != prevHeight || inlineHeightChanged {
 		m.layout = m.generateLayout(m.width, m.height)
 		m.updateSize()
 	}
@@ -3089,6 +3174,9 @@ func (m *UI) updateSize() {
 	m.chat.SetSize(m.layout.main.Dx(), m.layout.main.Dy())
 	m.textarea.MaxHeight = TextareaMaxHeight
 	m.textarea.SetWidth(m.layout.editor.Dx())
+	if resizable, ok := m.activeInline.(dialog.ResizableInlineEditor); ok {
+		resizable.SetWidth(m.layout.editor.Dx())
+	}
 	m.renderPills()
 
 	// Handle different app states
@@ -3117,10 +3205,8 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 		// frame's width to Height() keeps layout in sync with the
 		// width Draw will use, preventing flicker during fast resize.
 		editorWidth := m.editorContentWidth()
-		if m.focus == uiFocusEditor {
-			editorHeight = m.activeInline.Height(editorWidth)
-		} else if qf, ok := m.activeInline.(*dialog.QuestionForm); ok && m.shouldCollapseQuestion(qf) {
-			editorHeight = qf.CollapsedHeight() + 1
+		if collapsed, ok := m.collapsedInlineEditor(); ok {
+			editorHeight = collapsed.CollapsedHeight() + 1
 		} else {
 			editorHeight = m.activeInline.Height(editorWidth)
 		}
@@ -4169,11 +4255,17 @@ func (m *UI) editorContentWidth() int {
 	return width
 }
 
-// shouldCollapseQuestion reports whether a question form should render
-// in its collapsed one-line view. This is true only when the form is
-// unfocused and would consume more than half the terminal height.
-func (m *UI) shouldCollapseQuestion(qf *dialog.QuestionForm) bool {
-	return m.focus != uiFocusEditor && m.height > 0 && qf.Height(m.editorContentWidth()) > m.height*2/5
+// collapsedInlineEditor returns the active inline editor when it should use
+// its compact representation while chat has focus.
+func (m *UI) collapsedInlineEditor() (dialog.CollapsibleInlineEditor, bool) {
+	if m.focus == uiFocusEditor {
+		return nil, false
+	}
+	collapsible, ok := m.activeInline.(dialog.CollapsibleInlineEditor)
+	if !ok || !collapsible.ShouldCollapse(m.editorContentWidth(), m.height) {
+		return nil, false
+	}
+	return collapsible, true
 }
 
 // handlePermissionNotification updates tool items when permission state changes.
@@ -4226,7 +4318,7 @@ func (m *UI) handlePlanHandoff(rc notify.RunComplete) tea.Cmd {
 			m.sendMessage("Implement the plan."),
 		)
 	}
-	inline.OnKeepEditing = func(feedback string) tea.Cmd {
+	inline.OnRequestChanges = func(feedback string) tea.Cmd {
 		return m.sendMessage(feedback)
 	}
 	m.activeInline = inline
