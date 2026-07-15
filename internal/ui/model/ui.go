@@ -2279,7 +2279,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				if m.bangMode && value != "" {
 					m.bangMode = false
 					yolo := m.com.Workspace.PermissionSkipRequests()
-					m.setEditorPrompt(yolo, m.mode)
+					m.setEditorPrompt(yolo)
 					m.randomizePlaceholders()
 					m.historyReset()
 					return tea.Batch(m.runShellCommand(value))
@@ -2358,7 +2358,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					m.bangMode = false
 					m.bangWasEmpty = false
 					yolo := m.com.Workspace.PermissionSkipRequests()
-					m.setEditorPrompt(yolo, m.mode)
+					m.setEditorPrompt(yolo)
 					break
 				}
 
@@ -2408,7 +2408,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					m.textarea.SetCursorColumn(max(0, col-(len(newVal)-len(stripped))))
 					_ = line // cursor line doesn't change; prefix removed
 					yolo := m.com.Workspace.PermissionSkipRequests()
-					m.setEditorPrompt(yolo, m.mode)
+					m.setEditorPrompt(yolo)
 				} else if m.bangMode && newVal == "" && curValue != "" {
 					// Just cleared last character; mark empty, stay in bang mode.
 					m.bangWasEmpty = true
@@ -4323,7 +4323,7 @@ func (m *UI) checkBangModeAfterPaste() {
 	col := m.textarea.Column()
 	m.textarea.SetCursorColumn(max(0, col-(len(val)-len(stripped))))
 	yolo := m.com.Workspace.PermissionSkipRequests()
-	m.setEditorPrompt(yolo, m.mode)
+	m.setEditorPrompt(yolo)
 }
 
 // handlePasteMsg handles a paste message.
