@@ -430,11 +430,16 @@ func (a *AssistantMessageItem) cachedContent(width int) string {
 	if a.contentSec.hit(width, srcHash, extra) {
 		return a.contentSec.out
 	}
-	out := a.renderMarkdown(a.message.Content().Text, width)
+	planReady := common.PlanReadyMarkerPresent(a.message.Content().Text)
+	renderWidth := width
+	if planReady {
+		_, renderWidth = planBoxLayout(a.sty.Messages.PlanBox, width)
+	}
+	out := a.renderMarkdown(a.message.Content().Text, renderWidth)
 	// In plan mode the agent ends its final plan with a sentinel marker.
 	// Wrap that message in a background "card" so the plan stands out from
 	// regular assistant replies. Mirrors the ThinkingBox treatment.
-	if common.PlanReadyMarkerPresent(a.message.Content().Text) {
+	if planReady {
 		out = renderPlanBox(a.sty.Messages.PlanBox, out, width)
 	}
 	a.contentSec.store(width, srcHash, extra, out, 0)
@@ -445,7 +450,12 @@ func (a *AssistantMessageItem) cachedContent(width int) string {
 // every parsed cell so nested Markdown resets cannot expose the terminal
 // background. Foregrounds, text attributes, and hyperlinks remain unchanged.
 func renderPlanBox(style lipgloss.Style, content string, width int) string {
-	rendered := style.Width(width).Render(strings.TrimSpace(content))
+	style, innerWidth := planBoxLayout(style, width)
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, innerWidth, "")
+	}
+	rendered := style.Width(innerWidth).Render(strings.Join(lines, "\n"))
 	cardWidth := lipgloss.Width(rendered)
 	cardHeight := lipgloss.Height(rendered)
 	scr := uv.NewScreenBuffer(cardWidth, cardHeight)
@@ -458,6 +468,18 @@ func renderPlanBox(style lipgloss.Style, content string, width int) string {
 		}
 	}
 	return scr.Render()
+}
+
+// planBoxLayout returns a style and content width whose combined horizontal
+// frame fits within the available message width.
+func planBoxLayout(style lipgloss.Style, width int) (lipgloss.Style, int) {
+	width = max(1, width)
+	frameWidth := style.GetHorizontalFrameSize()
+	if frameWidth >= width {
+		style = style.PaddingLeft(0).PaddingRight(0)
+		frameWidth = style.GetHorizontalFrameSize()
+	}
+	return style, max(1, width-frameWidth)
 }
 
 // cachedError returns the rendered error section.
