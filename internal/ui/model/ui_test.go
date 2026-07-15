@@ -5,13 +5,16 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/dialog"
+	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
@@ -95,6 +98,8 @@ type testWorkspace struct {
 	cfg               *config.Config
 	setMainCalledWith string
 	updateCalls       int
+	agentReady        bool
+	runPrompts        []string
 }
 
 func (w *testWorkspace) Config() *config.Config {
@@ -113,6 +118,15 @@ func (w *testWorkspace) UpdateAgentModel(context.Context) error {
 
 func (w *testWorkspace) PermissionSkipRequests() bool {
 	return false
+}
+
+func (w *testWorkspace) AgentIsReady() bool {
+	return w.agentReady
+}
+
+func (w *testWorkspace) AgentRun(_ context.Context, _ string, prompt string, _ ...message.Attachment) error {
+	w.runPrompts = append(w.runPrompts, prompt)
+	return nil
 }
 
 func TestDefaultKeyMapHasShiftTab(t *testing.T) {
@@ -152,6 +166,7 @@ func TestToggleInputMode(t *testing.T) {
 
 func newPlanUI(t *testing.T, sessionID string) (*UI, *testWorkspace) {
 	t.Helper()
+	sty := styles.CharmtonePantera()
 	cfg := &config.Config{
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	}
@@ -164,6 +179,7 @@ func newPlanUI(t *testing.T, sessionID string) (*UI, *testWorkspace) {
 	u := &UI{
 		com: &common.Common{
 			Workspace: ws,
+			Styles:    &sty,
 		},
 		mode:     uiInputModePlan,
 		textarea: textarea.New(),
@@ -276,6 +292,35 @@ func TestHandlePlanHandoff_DuplicateGuard(t *testing.T) {
 	first := u.activeInline
 	u.handlePlanHandoff(rc) // guard: must not replace the existing inline
 	require.Same(t, first, u.activeInline)
+}
+
+func TestHandlePlanHandoff_KeepEditingSendsFeedbackInPlanMode(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	ws.agentReady = true
+	u.handlePlanHandoff(notify.RunComplete{
+		SessionID: "sess-1",
+		Text:      "Here is the plan.\n<!-- CRUSH_PLAN_READY -->",
+	})
+
+	inline, ok := u.activeInline.(*dialog.PlanHandoffInline)
+	require.True(t, ok)
+	require.NotNil(t, inline.OnKeepEditing)
+	require.NotNil(t, inline.OnConfirm)
+
+	cmd := inline.OnKeepEditing("Revise the scope")
+	require.NotNil(t, cmd)
+	require.Equal(t, uiInputModePlan, u.mode)
+
+	batch, ok := cmd().(tea.BatchMsg)
+	require.True(t, ok)
+	for _, nested := range batch {
+		if nested != nil {
+			nested()
+		}
+	}
+	require.Equal(t, []string{"Revise the scope"}, ws.runPrompts)
+	require.Equal(t, uiInputModePlan, u.mode)
 }
 
 func TestSetInputMode_SwitchesToCode(t *testing.T) {
