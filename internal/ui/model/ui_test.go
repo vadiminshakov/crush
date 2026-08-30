@@ -168,6 +168,13 @@ func (w *testWorkspace) AgentIsBusy() bool {
 	return w.agentBusy
 }
 
+func (w *testWorkspace) AgentReadyErr() error {
+	if !w.agentReady {
+		return workspace.ErrAgentNotInitialized
+	}
+	return nil
+}
+
 func (w *testWorkspace) AgentRun(_ context.Context, _ string, prompt string, _ ...message.Attachment) error {
 	w.runPrompts = append(w.runPrompts, prompt)
 	return nil
