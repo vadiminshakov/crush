@@ -445,8 +445,20 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 		if !hasReasoningEffort && shouldSetEffort {
 			mergedOptions["reasoning_effort"] = reasoningEffort
 		}
-		if openai.IsResponsesModel(model.CatwalkCfg.ID) {
-			if openai.IsResponsesReasoningModel(model.CatwalkCfg.ID) {
+		// ChatGPT-served models ride the Codex backend, which only
+		// speaks the Responses API — for every model, whatever the
+		// name-based heuristic says. Newer names (gpt-6-*) are not in
+		// the heuristic yet, so the request would go to /chat/completions
+		// and the backend would answer 404.
+		chatgptServed := providerCfg.Type == openai.Name &&
+			providerCfg.OAuthToken != nil &&
+			providerCfg.IsChatGPTModel(model.CatwalkCfg.ID)
+		if openai.IsResponsesModel(model.CatwalkCfg.ID) || chatgptServed {
+			isReasoning := openai.IsResponsesReasoningModel(model.CatwalkCfg.ID)
+			if chatgptServed && model.CatwalkCfg.CanReason {
+				isReasoning = true
+			}
+			if isReasoning {
 				mergedOptions["reasoning_summary"] = "auto"
 				mergedOptions["include"] = []openai.IncludeType{openai.IncludeReasoningEncryptedContent}
 			}
@@ -997,10 +1009,18 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 	return anthropic.New(opts...)
 }
 
-func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, token *oauth.Token) (fantasy.Provider, error) {
+func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, token *oauth.Token, forceResponses bool) (fantasy.Provider, error) {
 	opts := []openai.Option{
 		openai.WithAPIKey(apiKey),
-		openai.WithUseResponsesAPI(),
+	}
+	if forceResponses {
+		// The Codex backend only speaks the Responses API, for every
+		// model the subscription lists. The default heuristic would send
+		// names it does not recognize (gpt-6-*) to /chat/completions and
+		// the backend would answer 404.
+		opts = append(opts, openai.WithResponsesAPIFunc(func(string) bool { return true }))
+	} else {
+		opts = append(opts, openai.WithUseResponsesAPI())
 	}
 	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
@@ -1238,7 +1258,8 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		// the ChatGPT catalog (or any model, when the login is the only
 		// credential) go through the Codex backend with the OAuth token.
 		token := providerCfg.OAuthToken
-		if token != nil && providerCfg.UsesChatGPTAuth(model.Model, apiKey != "") {
+		chatgptServed := providerCfg.UsesChatGPTAuth(model.Model, apiKey != "")
+		if token != nil && chatgptServed {
 			baseURL = openaioauth.CodexBaseURL
 			apiKey = token.AccessToken
 			headers["originator"] = "crush"
@@ -1246,7 +1267,7 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 				headers["chatgpt-account-id"] = token.AccountID
 			}
 		}
-		return c.buildOpenaiProvider(baseURL, apiKey, headers, token)
+		return c.buildOpenaiProvider(baseURL, apiKey, headers, token, chatgptServed)
 	case anthropic.Name:
 		return c.buildAnthropicProvider(baseURL, apiKey, headers, providerCfg.ID)
 	case openrouter.Name:

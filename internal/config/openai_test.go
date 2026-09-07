@@ -110,12 +110,16 @@ func TestTokenFields(t *testing.T) {
 	t.Parallel()
 
 	t.Run("openai keeps the api key", func(t *testing.T) {
+		t.Parallel()
+
 		fields := tokenFields("openai", &oauth.Token{AccessToken: "at"})
 		require.Contains(t, fields, "providers.openai.oauth")
 		require.NotContains(t, fields, "providers.openai.api_key")
 	})
 
 	t.Run("other providers mirror the access token", func(t *testing.T) {
+		t.Parallel()
+
 		fields := tokenFields("hyper", &oauth.Token{AccessToken: "at"})
 		require.Contains(t, fields, "providers.hyper.oauth")
 		require.Equal(t, "at", fields["providers.hyper.api_key"])
@@ -161,14 +165,20 @@ func TestHasAPIKey(t *testing.T) {
 	t.Parallel()
 
 	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+
 		require.False(t, (&ProviderConfig{}).HasAPIKey(testResolver{}))
 	})
 
 	t.Run("literal key", func(t *testing.T) {
+		t.Parallel()
+
 		require.True(t, (&ProviderConfig{APIKey: "sk-key"}).HasAPIKey(testResolver{}))
 	})
 
 	t.Run("unresolved template", func(t *testing.T) {
+		t.Parallel()
+
 		require.False(t, (&ProviderConfig{APIKey: "$OPENAI_API_KEY"}).HasAPIKey(testResolver{}))
 	})
 }

@@ -43,7 +43,7 @@ func TestBrowserFlow_CallbackSuccess(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/auth/callback?code=abc&state=test-state", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/callback?code=abc&state=test-state", nil)
 	flow.handleCallback(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -61,7 +61,7 @@ func TestBrowserFlow_StateMismatch(t *testing.T) {
 	flow := newTestFlow(t, tokenResponse{AccessToken: "x", ExpiresIn: 60})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/auth/callback?code=abc&state=evil", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/callback?code=abc&state=evil", nil)
 	flow.handleCallback(rec, req)
 
 	_, err := flow.Wait(context.Background())
@@ -72,7 +72,7 @@ func TestBrowserFlow_ProviderError(t *testing.T) {
 	flow := newTestFlow(t, tokenResponse{AccessToken: "x", ExpiresIn: 60})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/auth/callback?error=access_denied&error_description=nope", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/callback?error=access_denied&error_description=nope", nil)
 	flow.handleCallback(rec, req)
 
 	// The failure page keeps a 400 so the browser reflects the outcome.
@@ -92,7 +92,7 @@ func TestBrowserFlow_StartHandoffPage(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/auth/start", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/start", nil)
 	flow.handleStart(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -108,7 +108,7 @@ func TestBrowserFlow_MissingCode(t *testing.T) {
 	flow := newTestFlow(t, tokenResponse{AccessToken: "x", ExpiresIn: 60})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/auth/callback?state=test-state", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/callback?state=test-state", nil)
 	flow.handleCallback(rec, req)
 
 	_, err := flow.Wait(context.Background())

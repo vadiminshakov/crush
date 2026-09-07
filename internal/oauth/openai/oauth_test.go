@@ -161,11 +161,15 @@ func TestParseJWTClaims(t *testing.T) {
 	t.Parallel()
 
 	t.Run("invalid structure", func(t *testing.T) {
+		t.Parallel()
+
 		_, err := ParseJWTClaims("not-a-jwt")
 		require.Error(t, err)
 	})
 
 	t.Run("padded base64", func(t *testing.T) {
+		t.Parallel()
+
 		payload := base64.URLEncoding.EncodeToString([]byte(`{"chatgpt_account_id":"a"}`))
 		claims, err := ParseJWTClaims(fmt.Sprintf("h.%s.s", payload))
 		require.NoError(t, err)

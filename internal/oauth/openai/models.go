@@ -105,7 +105,7 @@ func Models(ctx context.Context, token *oauth.Token) ([]catwalk.Model, error) {
 		})
 	}
 	if len(models) == 0 {
-		return nil, fmt.Errorf("Codex model catalog was empty")
+		return nil, fmt.Errorf("the Codex model catalog was empty")
 	}
 	return models, nil
 }
