@@ -57,7 +57,8 @@ type PlanHandoffInline struct {
 	keyLeftRight key.Binding
 	keyEnter     key.Binding
 	keyNewline   key.Binding
-	keyYes       key.Binding
+	keyCoding    key.Binding
+	keyYolo      key.Binding
 	keyNo        key.Binding
 	keyClose     key.Binding
 }
@@ -111,9 +112,13 @@ func NewPlanHandoffInline(com *common.Common) *PlanHandoffInline {
 			key.WithKeys("shift+enter", "ctrl+j"),
 			key.WithHelp("ctrl+j", "newline"),
 		),
-		keyYes: key.NewBinding(
+		keyCoding: key.NewBinding(
+			key.WithKeys("c", "C"),
+			key.WithHelp("c", "start coding"),
+		),
+		keyYolo: key.NewBinding(
 			key.WithKeys("y", "Y"),
-			key.WithHelp("y", "start coding"),
+			key.WithHelp("y", "yolo coding"),
 		),
 		keyNo: key.NewBinding(
 			key.WithKeys("n", "N"),
@@ -177,8 +182,11 @@ func (p *PlanHandoffInline) HandleKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 			return false, p.startEditing()
 		}
 		return true, p.runConfirm()
-	case key.Matches(msg, p.keyYes):
+	case key.Matches(msg, p.keyCoding):
 		p.selectedChoice = choiceStartCoding
+		return true, p.runConfirm()
+	case key.Matches(msg, p.keyYolo):
+		p.selectedChoice = choiceCodeYOLO
 		return true, p.runConfirm()
 	}
 	return false, nil
@@ -230,21 +238,21 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 			Selected:       p.selectedChoice == choiceStartCoding,
 			Hovered:        hoveredBtn == choiceStartCoding,
 			Padding:        3,
-			UnderlineIndex: -1,
+			UnderlineIndex: 6,
 		},
 		{
 			Text:           "Code with YOLO",
 			Selected:       p.selectedChoice == choiceCodeYOLO,
 			Hovered:        hoveredBtn == choiceCodeYOLO,
 			Padding:        3,
-			UnderlineIndex: -1,
+			UnderlineIndex: 10,
 		},
 		{
 			Text:           "Revise plan",
 			Selected:       p.selectedChoice == choiceRevisePlan,
 			Hovered:        hoveredBtn == choiceRevisePlan,
 			Padding:        3,
-			UnderlineIndex: -1,
+			UnderlineIndex: 10,
 		},
 	}
 
@@ -379,7 +387,7 @@ func (p *PlanHandoffInline) ShortHelp() []key.Binding {
 	if p.editing {
 		return []key.Binding{p.keyEnter, p.keyNewline, p.keyClose}
 	}
-	return []key.Binding{p.keyLeftRight, p.keyEnter, p.keyYes, p.keyNo}
+	return []key.Binding{p.keyLeftRight, p.keyEnter, p.keyCoding, p.keyYolo, p.keyNo}
 }
 
 // SetHover implements MouseClickableEditor.

@@ -296,6 +296,48 @@ func TestPlanHandoffStartCoding(t *testing.T) {
 	require.Equal(t, 1, confirmed)
 }
 
+func TestPlanHandoffCodingKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		key  tea.KeyPressMsg
+		yolo bool
+	}{
+		{"coding lowercase", tea.KeyPressMsg{Code: 'c', Text: "c"}, false},
+		{"coding uppercase", tea.KeyPressMsg{Code: 'C', Text: "C"}, false},
+		{"yolo lowercase", tea.KeyPressMsg{Code: 'y', Text: "y"}, true},
+		{"yolo uppercase", tea.KeyPressMsg{Code: 'Y', Text: "Y"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := newTestPlanHandoff()
+			confirmed := false
+			p.OnConfirm = func(yolo bool) tea.Cmd {
+				require.Equal(t, tt.yolo, yolo)
+				confirmed = true
+				return nil
+			}
+
+			done, _ := p.HandleKey(tt.key)
+			require.True(t, done)
+			require.True(t, confirmed)
+		})
+	}
+}
+
+func TestPlanHandoffShortHelpShowsCodingKeys(t *testing.T) {
+	t.Parallel()
+
+	p := newTestPlanHandoff()
+	help := p.ShortHelp()
+	require.Len(t, help, 5)
+	require.Contains(t, help[2].Help().Key, "c")
+	require.Contains(t, help[3].Help().Key, "y")
+}
+
 func planHandoffButtonPoint(t *testing.T, p *PlanHandoffInline, index int) (int, int) {
 	t.Helper()
 	for y := range 10 {
