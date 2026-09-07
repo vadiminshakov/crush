@@ -353,20 +353,21 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	runID := RunIDFromContext(ctx)
 	run := func() (*fantasy.AgentResult, error) {
 		return c.currentAgent.Run(ctx, SessionAgentCall{
-			SessionID:        sessionID,
-			RunID:            runID,
-			Prompt:           prompt,
-			Attachments:      attachments,
-			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  mergedOptions,
-			Temperature:      temp,
-			TopP:             topP,
-			TopK:             callTopK(providerCfg, topK),
-			FrequencyPenalty: freqPenalty,
-			PresencePenalty:  presPenalty,
-			OnComplete:       onComplete,
-			Accepted:         accept,
-			OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
+			SessionID:         sessionID,
+			RunID:             runID,
+			Prompt:            prompt,
+			HiddenUserMessage: message.HiddenUserMessage(ctx),
+			Attachments:       attachments,
+			MaxOutputTokens:   maxTokens,
+			ProviderOptions:   mergedOptions,
+			Temperature:       temp,
+			TopP:              topP,
+			TopK:              callTopK(providerCfg, topK),
+			FrequencyPenalty:  freqPenalty,
+			PresencePenalty:   presPenalty,
+			OnComplete:        onComplete,
+			Accepted:          accept,
+			OnAuthRefresh:     c.makeAuthRefreshCallback(providerCfg),
 		})
 	}
 	beforeLoaded := c.skillTracker.LoadedNames()
