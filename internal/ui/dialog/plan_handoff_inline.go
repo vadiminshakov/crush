@@ -16,31 +16,39 @@ import (
 	"github.com/rivo/uniseg"
 )
 
+// Indices of the handoff buttons, in render order.
+const (
+	choiceStartCoding = iota
+	choiceCodeYOLO
+	choiceRevisePlan
+	choiceCount
+)
+
 // PlanHandoffInline is a small inline prompt rendered at the bottom of the
 // editor area when the plan agent signals it is ready for execution.
 // It replaces the textarea temporarily, asking the user to switch to code
 // mode or request changes to the plan.
 type PlanHandoffInline struct {
-	com                    *common.Common
-	requestChangesSelected bool
-	editing                bool
-	focused                bool
-	compositor             *lipgloss.Compositor
-	hoverX                 int
-	hoverY                 int
-	editor                 textarea.Model
-	editorTextArea         image.Rectangle
-	selectionAnchor        planHandoffSelectionPoint
-	selectionHead          planHandoffSelectionPoint
-	selectionSet           bool
-	selecting              bool
+	com             *common.Common
+	selectedChoice  int
+	editing         bool
+	focused         bool
+	compositor      *lipgloss.Compositor
+	hoverX          int
+	hoverY          int
+	editor          textarea.Model
+	editorTextArea  image.Rectangle
+	selectionAnchor planHandoffSelectionPoint
+	selectionHead   planHandoffSelectionPoint
+	selectionSet    bool
+	selecting       bool
 
 	heightChanged bool
 
-	// OnConfirm is called when the user confirms switching to code mode.
+	// OnConfirm receives whether the user chose coding with YOLO.
 	// The returned tea.Cmd is queued by the UI to perform the switch and
 	// start the coder agent.
-	OnConfirm func() tea.Cmd
+	OnConfirm func(yolo bool) tea.Cmd
 	// OnRequestChanges is called with the user's feedback when they submit it.
 	OnRequestChanges func(string) tea.Cmd
 
@@ -88,9 +96,9 @@ func NewPlanHandoffInline(com *common.Common) *PlanHandoffInline {
 	editor.SetHeight(3)
 
 	return &PlanHandoffInline{
-		com:                    com,
-		requestChangesSelected: false,
-		editor:                 editor,
+		com:            com,
+		selectedChoice: choiceStartCoding,
+		editor:         editor,
 		keyLeftRight: key.NewBinding(
 			key.WithKeys("left", "right"),
 			key.WithHelp("←/→", "switch"),
@@ -158,14 +166,19 @@ func (p *PlanHandoffInline) HandleKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	case key.Matches(msg, p.keyNo):
 		return false, p.startEditing()
 	case key.Matches(msg, p.keyLeftRight):
-		p.requestChangesSelected = !p.requestChangesSelected
+		delta := 1
+		if msg.String() == "left" {
+			delta = choiceCount - 1
+		}
+		p.selectedChoice = (p.selectedChoice + delta) % choiceCount
 		return false, nil
 	case key.Matches(msg, p.keyEnter):
-		if p.requestChangesSelected {
+		if p.selectedChoice == choiceRevisePlan {
 			return false, p.startEditing()
 		}
 		return true, p.runConfirm()
 	case key.Matches(msg, p.keyYes):
+		p.selectedChoice = choiceStartCoding
 		return true, p.runConfirm()
 	}
 	return false, nil
@@ -173,7 +186,7 @@ func (p *PlanHandoffInline) HandleKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 
 func (p *PlanHandoffInline) startEditing() tea.Cmd {
 	p.editing = true
-	p.requestChangesSelected = true
+	p.selectedChoice = choiceRevisePlan
 	p.heightChanged = true
 	p.clearSelection()
 	if p.focused {
@@ -184,7 +197,7 @@ func (p *PlanHandoffInline) startEditing() tea.Cmd {
 
 func (p *PlanHandoffInline) runConfirm() tea.Cmd {
 	if p.OnConfirm != nil {
-		cmd := p.OnConfirm()
+		cmd := p.OnConfirm(p.selectedChoice == choiceCodeYOLO)
 		p.pendingCmd = cmd
 		return cmd
 	}
@@ -214,15 +227,22 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 	buttons := []common.ButtonOpts{
 		{
 			Text:           "Start coding",
-			Selected:       !p.requestChangesSelected,
-			Hovered:        hoveredBtn == 0,
+			Selected:       p.selectedChoice == choiceStartCoding,
+			Hovered:        hoveredBtn == choiceStartCoding,
+			Padding:        3,
+			UnderlineIndex: -1,
+		},
+		{
+			Text:           "Code with YOLO",
+			Selected:       p.selectedChoice == choiceCodeYOLO,
+			Hovered:        hoveredBtn == choiceCodeYOLO,
 			Padding:        3,
 			UnderlineIndex: -1,
 		},
 		{
 			Text:           "Revise plan",
-			Selected:       p.requestChangesSelected,
-			Hovered:        hoveredBtn == 1,
+			Selected:       p.selectedChoice == choiceRevisePlan,
+			Hovered:        hoveredBtn == choiceRevisePlan,
 			Padding:        3,
 			UnderlineIndex: -1,
 		},
@@ -237,7 +257,7 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 		question: question,
 		buttons:  buttons,
 		spacing:  spacing,
-		height:   lipgloss.Height(question) + 1 + buttonHeight,
+		height:   lipgloss.Height(question) + 1 + buttonHeight + 1,
 	}
 }
 
@@ -372,12 +392,12 @@ func (p *PlanHandoffInline) HandleMouseClick(x, y int) (bool, bool) {
 	if p.editing {
 		return false, false
 	}
-	switch common.HitButtonIndex(p.compositor, x, y) {
-	case 0: // Start coding.
-		p.requestChangesSelected = false
+	switch idx := common.HitButtonIndex(p.compositor, x, y); idx {
+	case choiceStartCoding, choiceCodeYOLO:
+		p.selectedChoice = idx
 		p.runConfirm()
 		return true, true
-	case 1: // Revise plan.
+	case choiceRevisePlan:
 		p.startEditing()
 		return false, true
 	}

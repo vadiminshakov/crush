@@ -129,13 +129,8 @@ type testWorkspace struct {
 	agentReady        bool
 	agentBusy         bool
 	runPrompts        []string
-}
-
-func (w *testWorkspace) AgentReadyErr() error {
-	if !w.agentReady {
-		return workspace.ErrAgentNotInitialized
-	}
-	return nil
+	yolo              bool
+	runHidden         []bool
 }
 
 func (w *testWorkspace) Config() *config.Config {
@@ -156,9 +151,9 @@ func (w *testWorkspace) UpdateAgentModel(context.Context) error {
 	return nil
 }
 
-func (w *testWorkspace) PermissionSkipRequests() bool {
-	return false
-}
+func (w *testWorkspace) PermissionSkipRequests() bool { return w.yolo }
+
+func (w *testWorkspace) PermissionSetSkipRequests(skip bool) { w.yolo = skip }
 
 func (w *testWorkspace) AgentIsReady() bool {
 	return w.agentReady
@@ -175,8 +170,9 @@ func (w *testWorkspace) AgentReadyErr() error {
 	return nil
 }
 
-func (w *testWorkspace) AgentRun(_ context.Context, _ string, prompt string, _ ...message.Attachment) error {
+func (w *testWorkspace) AgentRun(ctx context.Context, _ string, prompt string, _ ...message.Attachment) error {
 	w.runPrompts = append(w.runPrompts, prompt)
+	w.runHidden = append(w.runHidden, message.HiddenUserMessage(ctx))
 	return nil
 }
 
@@ -189,31 +185,25 @@ func TestDefaultKeyMapHasShiftTab(t *testing.T) {
 
 func TestToggleInputMode(t *testing.T) {
 	t.Parallel()
-
-	cfg := &config.Config{
-		Providers: csync.NewMap[string, config.ProviderConfig](),
+	ui, ws := newPlanUI(t, "sess-1")
+	ui.mode = uiInputModeCode
+	for _, want := range []struct {
+		mode    uiInputMode
+		yolo    bool
+		updates int
+	}{
+		{uiInputModePlan, false, 1},
+		{uiInputModePlan, true, 1},
+		{uiInputModeCode, true, 2},
+		{uiInputModeCode, false, 2},
+	} {
+		msg := ui.toggleInputMode()()
+		require.NotNil(t, msg)
+		ui.modeSwitching = false
+		require.Equal(t, want.mode, ui.mode)
+		require.Equal(t, want.yolo, ws.yolo)
+		require.Equal(t, want.updates, ws.updateCalls)
 	}
-	ws := &testWorkspace{cfg: cfg}
-	ui := &UI{
-		com: &common.Common{
-			Workspace: ws,
-		},
-		mode:     uiInputModeCode,
-		textarea: textarea.New(),
-		status:   &Status{},
-	}
-
-	msg := ui.toggleInputMode()()
-	require.NotNil(t, msg)
-	require.Equal(t, uiInputModePlan, ui.mode)
-	require.Equal(t, config.AgentPlan, ws.setMainCalledWith)
-	require.Equal(t, 1, ws.updateCalls)
-
-	msg = ui.toggleInputMode()()
-	require.NotNil(t, msg)
-	require.Equal(t, uiInputModeCode, ui.mode)
-	require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
-	require.Equal(t, 2, ws.updateCalls)
 }
 
 func newPlanUI(t *testing.T, sessionID string) (*UI, *testWorkspace) {
@@ -585,7 +575,7 @@ func TestPlanHandoffConfirm_ClearsPendingAndSwitchesMode(t *testing.T) {
 	inline, ok := u.activeInline.(*dialog.PlanHandoffInline)
 	require.True(t, ok)
 
-	cmd := inline.OnConfirm()
+	cmd := inline.OnConfirm(false)
 	require.NotNil(t, cmd)
 	require.Equal(t, uiInputModeCode, u.mode)
 	require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
@@ -627,4 +617,72 @@ func TestResetPlanModeState_NoopInCodeMode(t *testing.T) {
 	require.Nil(t, cmd)
 	require.Equal(t, uiInputModeCode, u.mode)
 	require.Empty(t, ws.setMainCalledWith)
+}
+
+func TestPlanHandoffExplicitPermissionMode(t *testing.T) {
+	t.Parallel()
+	for _, yolo := range []bool{false, true} {
+		u, ws := newPlanUI(t, "sess-1")
+		ws.yolo = !yolo
+		u.openPlanHandoff()
+		inline := u.activeInline.(*dialog.PlanHandoffInline)
+		cmd := inline.OnConfirm(yolo)
+		require.Equal(t, yolo, ws.yolo)
+		require.Empty(t, ws.runPrompts, "wait for the coder model to finish switching")
+		switched := cmd().(modeSwitchedMsg)
+		require.NoError(t, switched.err)
+		require.Equal(t, "sess-1", switched.continueSessionID)
+	}
+}
+
+func TestPlanPromptTakesPrecedenceOverYOLO(t *testing.T) {
+	t.Parallel()
+	u, _ := newPlanUI(t, "sess-1")
+	u.textarea.SetWidth(40)
+	u.textarea.Focus()
+	u.setEditorPrompt(true)
+	require.Contains(t, u.textarea.View(), " P ")
+	require.NotContains(t, u.textarea.View(), " Y ")
+}
+
+func TestGeneratedPlanContinuationIsHidden(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	ws.agentReady = true
+	for _, hidden := range []bool{true, false} {
+		batch := u.sendMessageInternal("Implement the plan.", hidden)().(tea.BatchMsg)
+		for _, cmd := range batch {
+			if cmd != nil {
+				cmd()
+			}
+		}
+	}
+	require.Equal(t, []bool{true, false}, ws.runHidden)
+	require.Equal(t, []string{"Implement the plan.", "Implement the plan."}, ws.runPrompts)
+}
+
+func TestPlanYOLOBadge(t *testing.T) {
+	t.Parallel()
+	u, _ := newPlanUI(t, "sess-1")
+	for _, focused := range []bool{true, false} {
+		info := textarea.PromptInfo{Focused: focused}
+		normal := u.planPromptFunc(info, false)
+		yolo := u.planPromptFunc(info, true)
+		require.NotEqual(t, normal, yolo)
+		if focused {
+			require.Equal(t, u.com.Styles.Editor.PromptPlanYoloIconFocused.Render(), yolo)
+		} else {
+			require.Equal(t, u.com.Styles.Editor.PromptPlanYoloIconBlurred.Render(), yolo)
+		}
+	}
+}
+
+func TestToggleInputModePreservesExistingYOLOOnEntry(t *testing.T) {
+	t.Parallel()
+	u, ws := newPlanUI(t, "sess-1")
+	u.mode = uiInputModeCode
+	ws.yolo = true
+	u.toggleInputMode()()
+	require.Equal(t, uiInputModePlan, u.mode)
+	require.True(t, ws.yolo)
 }
