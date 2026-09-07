@@ -237,6 +237,10 @@ type UI struct {
 	// by setInputMode is still in flight; sending is blocked meanwhile.
 	modeSwitching bool
 
+	// cycleYolo is true while YOLO was enabled by the Shift+Tab input-mode
+	// cycle, which is the only case where the cycle may disable it again.
+	cycleYolo bool
+
 	keyMap KeyMap
 	keyenh tea.KeyboardEnhancementsMsg
 
@@ -4233,13 +4237,16 @@ func (m *UI) toggleInputMode() tea.Cmd {
 	if m.mode == uiInputModePlan {
 		if !m.com.Workspace.PermissionSkipRequests() {
 			m.toggleYoloMode()
+			m.cycleYolo = true
 			return util.ReportInfo("input mode: plan + yolo")
 		}
 		// Leave YOLO enabled while switching back to the coder. This is
 		// the third step in the Shift+Tab cycle: plan + YOLO -> YOLO.
 		return m.setInputMode(uiInputModeCode)
 	}
-	if m.com.Workspace.PermissionSkipRequests() {
+	// Only the cycle may turn YOLO back off: YOLO the user enabled himself
+	// (Ctrl+Y, the command palette) survives entering plan mode.
+	if m.com.Workspace.PermissionSkipRequests() && m.cycleYolo {
 		m.toggleYoloMode()
 		return util.ReportInfo("input mode: code")
 	}
