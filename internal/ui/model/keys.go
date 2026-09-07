@@ -123,7 +123,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		ShiftTab: key.NewBinding(
 			key.WithKeys("shift+tab"),
-			key.WithHelp("shift+tab", "toggle plan mode"),
+			key.WithHelp("shift+tab", "cycle input mode"),
 		),
 	}
 

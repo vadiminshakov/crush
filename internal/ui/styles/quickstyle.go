@@ -395,6 +395,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	planMD.H3.Prefix = "  "
 	planMD.H4.Prefix = "    "
 	planMD.H5.Prefix = "      "
+	planMD.Code.Color = hex(o.secondary)
+	planMD.Code.Bold = new(true)
+	planMD.CodeBlock.Color = hex(o.fgBase)
 	s.PlanMarkdown = withMarkdownBackground(planMD, hex(o.bgLeastVisible))
 
 	// QuietMarkdown style - muted colors on subtle background for thinking content.
@@ -762,6 +765,12 @@ func quickStyle(o quickStyleOpts) Styles {
 	// Editor
 	s.Editor.PromptNormalFocused = lipgloss.NewStyle().Foreground(o.successMostSubtle).SetString("::: ")
 	s.Editor.PromptNormalBlurred = s.Editor.PromptNormalFocused.Foreground(o.fgMoreSubtle)
+	s.Editor.PromptPlanIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.onPrimary).Background(o.primary).Bold(true).SetString(" P ")
+	s.Editor.PromptPlanIconBlurred = s.Editor.PromptPlanIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
+	s.Editor.PromptPlanDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.primary).SetString(":::")
+	s.Editor.PromptPlanDotsBlurred = s.Editor.PromptPlanDotsFocused.Foreground(o.fgMoreSubtle)
+	s.Editor.PromptPlanYoloIconFocused = s.Editor.PromptPlanIconFocused.Foreground(o.bgBase).Background(o.warning)
+	s.Editor.PromptPlanYoloIconBlurred = s.Editor.PromptPlanYoloIconFocused.Faint(true)
 	s.Editor.PromptYoloIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.fgMostSubtle).Background(o.busy).Bold(true).SetString(" Y ")
 	s.Editor.PromptYoloIconBlurred = s.Editor.PromptYoloIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
 	s.Editor.PromptYoloDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.warningSubtle).SetString(":::")
@@ -1059,7 +1068,6 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Dialog.Sessions.InfoFocused = lipgloss.NewStyle().Foreground(o.fgBase)
 
 	s.Status.Help = lipgloss.NewStyle().Padding(0, 1)
-	s.Status.PlanBadge = lipgloss.NewStyle().Foreground(o.onPrimary).Background(o.primary).Padding(0, 1).Bold(true)
 	s.Status.SuccessIndicator = base.Foreground(o.bgLessVisible).Background(o.success).Padding(0, 1).Bold(true).SetString("OKAY!")
 	s.Status.InfoIndicator = s.Status.SuccessIndicator
 	s.Status.UpdateIndicator = s.Status.SuccessIndicator.SetString("HEY!")
@@ -1114,13 +1122,6 @@ func quickStyle(o quickStyleOpts) Styles {
 // primitive that does not already set its own background, so glamour paints an
 // uninterrupted background under all rendered text. Primitives that carry an
 // intentional background of their own (e.g. H1, inline code) keep it.
-//
-// The CodeBlock Chroma section is nilled out so that code blocks render without
-// per-token syntax highlighting. The xchroma formatter is registered globally
-// with a nil/zero background colour; each token's SGR reset would otherwise
-// punch a hole in the CodeBlock background mid-line. Removing Chroma from this
-// style lets glamour fall back to plain-text rendering for code blocks, which
-// keeps the background uninterrupted.
 func withMarkdownBackground(cfg ansi.StyleConfig, bg *string) ansi.StyleConfig {
 	for _, p := range []*ansi.StylePrimitive{
 		&cfg.Document.StylePrimitive,
@@ -1158,10 +1159,5 @@ func withMarkdownBackground(cfg ansi.StyleConfig, bg *string) ansi.StyleConfig {
 			p.BackgroundColor = bg
 		}
 	}
-	// Chroma syntax-highlighting uses the globally registered xchroma formatter,
-	// which hardcodes a nil background per token. Those per-token SGR resets
-	// break the CodeBlock background. Nil out Chroma so code blocks in the plan
-	// card render as plain text with a consistent background.
-	cfg.CodeBlock.Chroma = nil
 	return cfg
 }

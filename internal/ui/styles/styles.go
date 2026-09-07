@@ -153,7 +153,15 @@ type Styles struct {
 		PromptNormalFocused lipgloss.Style
 		PromptNormalBlurred lipgloss.Style
 
-		// YOLO mode prompt (" ! " icon + ":::" dots).
+		// Plan mode prompt, with a warning badge when YOLO is active.
+		PromptPlanIconFocused     lipgloss.Style
+		PromptPlanIconBlurred     lipgloss.Style
+		PromptPlanDotsFocused     lipgloss.Style
+		PromptPlanDotsBlurred     lipgloss.Style
+		PromptPlanYoloIconFocused lipgloss.Style
+		PromptPlanYoloIconBlurred lipgloss.Style
+
+		// YOLO mode prompt.
 		PromptYoloIconFocused lipgloss.Style
 		PromptYoloIconBlurred lipgloss.Style
 		PromptYoloDotsFocused lipgloss.Style
@@ -573,8 +581,7 @@ type Styles struct {
 
 	// Status bar and help
 	Status struct {
-		Help      lipgloss.Style
-		PlanBadge lipgloss.Style
+		Help lipgloss.Style
 
 		ErrorIndicator   lipgloss.Style
 		WarnIndicator    lipgloss.Style

@@ -160,7 +160,7 @@ func TestPlanHandoffEscapePreservesDraft(t *testing.T) {
 	require.False(t, p.editor.Focused())
 	require.Equal(t, "Keep this draft", p.editor.Value())
 	require.True(t, p.HeightChanged())
-	require.Equal(t, 3, p.Height(80))
+	require.Equal(t, 4, p.Height(80))
 
 	done, _ = p.HandleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	require.False(t, done)
@@ -203,7 +203,7 @@ func TestPlanHandoffMouseRequestChanges(t *testing.T) {
 	scr := uv.NewScreenBuffer(80, 10)
 	p.Draw(scr, image.Rect(0, 0, 80, 10))
 
-	x, y := planHandoffButtonPoint(t, p, 1)
+	x, y := planHandoffButtonPoint(t, p, 2)
 	done, handled := p.HandleMouseClick(x, y)
 	require.False(t, done)
 	require.True(t, handled)
@@ -281,7 +281,8 @@ func TestPlanHandoffStartCoding(t *testing.T) {
 
 	p := newTestPlanHandoff()
 	confirmed := 0
-	p.OnConfirm = func() tea.Cmd {
+	p.OnConfirm = func(yolo bool) tea.Cmd {
+		require.False(t, yolo)
 		return func() tea.Msg {
 			confirmed++
 			return nil
@@ -315,4 +316,45 @@ func requirePlanHandoffColorEqual(t *testing.T, want, got color.Color) {
 	wantR, wantG, wantB, wantA := want.RGBA()
 	gotR, gotG, gotB, gotA := got.RGBA()
 	require.Equal(t, [4]uint32{wantR, wantG, wantB, wantA}, [4]uint32{gotR, gotG, gotB, gotA})
+}
+
+func TestPlanHandoffYOLO(t *testing.T) {
+	t.Parallel()
+	for _, mouse := range []bool{false, true} {
+		p := newTestPlanHandoff()
+		confirmed := false
+		p.OnConfirm = func(yolo bool) tea.Cmd {
+			require.True(t, yolo)
+			confirmed = true
+			return nil
+		}
+		if mouse {
+			scr := uv.NewScreenBuffer(24, p.Height(24))
+			p.Draw(scr, image.Rect(0, 0, 24, p.Height(24)))
+			x, y := planHandoffButtonPoint(t, p, 1)
+			done, handled := p.HandleMouseClick(x, y)
+			require.True(t, done)
+			require.True(t, handled)
+		} else {
+			p.HandleKey(tea.KeyPressMsg{Code: tea.KeyRight})
+			done, _ := p.HandleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+			require.True(t, done)
+		}
+		require.True(t, confirmed)
+	}
+}
+
+func TestPlanHandoffChoiceWrapAndBottomGap(t *testing.T) {
+	t.Parallel()
+	p := newTestPlanHandoff()
+	p.HandleKey(tea.KeyPressMsg{Code: tea.KeyLeft})
+	require.Equal(t, 2, p.selectedChoice)
+	p.HandleKey(tea.KeyPressMsg{Code: tea.KeyRight})
+	require.Equal(t, 0, p.selectedChoice)
+	for _, width := range []int{80, 24} {
+		scr := uv.NewScreenBuffer(width, p.Height(width))
+		p.Draw(scr, image.Rect(0, 0, width, p.Height(width)))
+		lines := strings.Split(ansi.Strip(scr.Render()), "\n")
+		require.Empty(t, strings.TrimSpace(lines[len(lines)-1]))
+	}
 }

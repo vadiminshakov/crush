@@ -524,7 +524,6 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	ui.randomizePlaceholders()
 	ui.textarea.Placeholder = ui.readyPlaceholder
 	ui.status = status
-	ui.status.SetMode(ui.mode == uiInputModePlan)
 
 	// Initialize compact mode from config
 	ui.forceCompactMode = com.Config().Options.TUI.CompactMode
@@ -896,6 +895,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
 			break
+		}
+		if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
+			cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
 		}
 		cmds = append(cmds, util.ReportInfo("input mode: "+msg.label))
 
@@ -1495,7 +1497,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.textarea.Placeholder = m.readyPlaceholder
 		}
-		if !m.bangMode && m.yoloModeCached() {
+		if !m.bangMode && m.mode != uiInputModePlan && m.yoloModeCached() {
 			m.textarea.Placeholder = "Yolo mode!"
 		}
 	}
@@ -2035,7 +2037,6 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Command dialog messages.
 	case dialog.ActionToggleYoloMode:
 		m.toggleYoloMode()
-		m.status.SetMode(m.mode == uiInputModePlan)
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
@@ -4136,11 +4137,16 @@ func (m *UI) openEditor(value string) tea.Cmd {
 }
 
 // setEditorPrompt configures the textarea prompt function based on whether
-// yolo mode or bang mode is enabled. Plan mode is surfaced via the
-// status-bar badge (see Status.renderModeBadge), not the editor prompt.
+// plan, yolo, or bang mode is enabled.
 func (m *UI) setEditorPrompt(yolo bool) {
 	if m.bangMode {
 		m.textarea.SetPromptFunc(4, m.bangPromptFunc)
+		return
+	}
+	if m.mode == uiInputModePlan {
+		m.textarea.SetPromptFunc(4, func(info textarea.PromptInfo) string {
+			return m.planPromptFunc(info, yolo)
+		})
 		return
 	}
 	if yolo {
@@ -4164,6 +4170,27 @@ func (m *UI) normalPromptFunc(info textarea.PromptInfo) string {
 		return t.Editor.PromptNormalFocused.Render()
 	}
 	return t.Editor.PromptNormalBlurred.Render()
+}
+
+// planPromptFunc marks planning with a badge beside the editor.
+func (m *UI) planPromptFunc(info textarea.PromptInfo, yolo bool) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 && yolo {
+		if info.Focused {
+			return t.Editor.PromptPlanYoloIconFocused.Render()
+		}
+		return t.Editor.PromptPlanYoloIconBlurred.Render()
+	}
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return t.Editor.PromptPlanIconFocused.Render()
+		}
+		return t.Editor.PromptPlanIconBlurred.Render()
+	}
+	if info.Focused {
+		return t.Editor.PromptPlanDotsFocused.Render()
+	}
+	return t.Editor.PromptPlanDotsBlurred.Render()
 }
 
 // yoloPromptFunc returns the yolo mode editor prompt style with warning icon
@@ -4200,14 +4227,23 @@ func (m *UI) bangPromptFunc(info textarea.PromptInfo) string {
 }
 
 func (m *UI) toggleInputMode() tea.Cmd {
-	if m.isAgentBusy() {
+	if m.isAgentBusy() || m.modeSwitching {
 		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
 	}
-	target := uiInputModePlan
 	if m.mode == uiInputModePlan {
-		target = uiInputModeCode
+		if !m.com.Workspace.PermissionSkipRequests() {
+			m.toggleYoloMode()
+			return util.ReportInfo("input mode: plan + yolo")
+		}
+		// Leave YOLO enabled while switching back to the coder. This is
+		// the third step in the Shift+Tab cycle: plan + YOLO -> YOLO.
+		return m.setInputMode(uiInputModeCode)
 	}
-	return m.setInputMode(target)
+	if m.com.Workspace.PermissionSkipRequests() {
+		m.toggleYoloMode()
+		return util.ReportInfo("input mode: code")
+	}
+	return m.setInputMode(uiInputModePlan)
 }
 
 func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
@@ -4220,9 +4256,6 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 
 	m.mode = target
 	m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests())
-	if m.status != nil {
-		m.status.SetMode(m.mode == uiInputModePlan)
-	}
 
 	if err := m.com.Workspace.AgentSetMain(agentID); err != nil {
 		return util.ReportError(err)
@@ -4240,8 +4273,9 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 // modeSwitchedMsg reports that the async agent-model update started by
 // setInputMode has finished (successfully or not).
 type modeSwitchedMsg struct {
-	label string
-	err   error
+	continueSessionID string
+	label             string
+	err               error
 }
 
 // closeCompletions closes the completions popup and resets state.
@@ -4542,6 +4576,11 @@ func (m *UI) attachSkill(skillID, name string) tea.Cmd {
 
 // sendMessage sends a message with the given content and attachments.
 func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.Cmd {
+	return m.sendMessageInternal(content, false, attachments...)
+}
+
+// sendMessageInternal can hide a generated continuation from the chat.
+func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...message.Attachment) tea.Cmd {
 	if err := m.com.Workspace.AgentReadyErr(); err != nil {
 		return util.ReportError(err)
 	}
@@ -4593,7 +4632,11 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 		// been accepted (HTTP 202) or synchronously with a validation
 		// or transport error. Run failures and cancellation surface
 		// through SSE-derived events, not this return value.
-		err := m.com.Workspace.AgentRun(context.Background(), sessionID, content, attachments...)
+		runCtx := context.Background()
+		if hidden {
+			runCtx = message.WithHiddenUserMessage(runCtx)
+		}
+		err := m.com.Workspace.AgentRun(runCtx, sessionID, content, attachments...)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return util.InfoMsg{
 				Type: util.InfoTypeError,
@@ -5067,12 +5110,9 @@ func (m *UI) resetPlanModeState() tea.Cmd {
 }
 
 // setPlanReadyPending records (or clears, with an empty ID) the session that
-// has an unconfirmed ready plan and syncs the status-bar badge.
+// has an unconfirmed ready plan.
 func (m *UI) setPlanReadyPending(sessionID string) {
 	m.planReadySessionID = sessionID
-	if m.status != nil {
-		m.status.SetPlanReady(sessionID != "")
-	}
 }
 
 // openPlanHandoff replaces the textarea with the inline "switch to code"
@@ -5080,12 +5120,21 @@ func (m *UI) setPlanReadyPending(sessionID string) {
 // by pressing enter on an empty editor while still in plan mode.
 func (m *UI) openPlanHandoff() {
 	inline := dialog.NewPlanHandoffInline(m.com)
-	inline.OnConfirm = func() tea.Cmd {
+	inline.OnConfirm = func(yolo bool) tea.Cmd {
+		if m.com.Workspace.PermissionSkipRequests() != yolo {
+			m.toggleYoloMode()
+		}
 		m.setPlanReadyPending("")
-		return tea.Sequence(
-			m.setInputMode(uiInputModeCode),
-			m.sendMessage("Implement the plan."),
-		)
+		sessionID := m.session.ID
+		cmd := m.setInputMode(uiInputModeCode)
+		return func() tea.Msg {
+			result := cmd()
+			if switched, ok := result.(modeSwitchedMsg); ok {
+				switched.continueSessionID = sessionID
+				return switched
+			}
+			return result
+		}
 	}
 	inline.OnRequestChanges = func(feedback string) tea.Cmd {
 		return m.sendMessage(feedback)
