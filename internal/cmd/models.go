@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2/tree"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/mattn/go-isatty"
@@ -56,20 +57,34 @@ crush models gpt5`,
 				name:       provider.Name,
 				configured: true,
 			}
-			for _, model := range provider.Models {
-				if term != "" {
-					matched := false
-					for _, s := range []string{provider.ID, provider.Name, model.ID, model.Name} {
-						if strings.Contains(strings.ToLower(s), term) {
-							matched = true
-							break
-						}
-					}
-					if !matched {
+
+			// The OpenAI provider carries two catalogs: API-key models
+			// and the ChatGPT subscription's Codex models. The TUI
+			// splits them into "OpenAI (API)" and "OpenAI (OAuth)"
+			// sections; here they merge into one list.
+			modelSets := [][]catwalk.Model{provider.Models, provider.ChatGPTModels}
+
+			seen := make(map[string]bool)
+			for _, models := range modelSets {
+				for _, model := range models {
+					if seen[model.ID] {
 						continue
 					}
+					if term != "" {
+						matched := false
+						for _, s := range []string{provider.ID, provider.Name, model.ID, model.Name} {
+							if strings.Contains(strings.ToLower(s), term) {
+								matched = true
+								break
+							}
+						}
+						if !matched {
+							continue
+						}
+					}
+					seen[model.ID] = true
+					entry.models = append(entry.models, model.ID)
 				}
-				entry.models = append(entry.models, model.ID)
 			}
 			if len(entry.models) > 0 {
 				slices.Sort(entry.models)

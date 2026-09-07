@@ -441,8 +441,23 @@ func (m *Models) setProviderItems() error {
 
 		name := cmp.Or(displayProvider.Name, providerID)
 
-		group := NewModelGroup(t, name, providerConfigured)
+		// The OpenAI provider carries two credentials that can coexist:
+		// an API key and a ChatGPT (OAuth) login. As soon as one exists,
+		// the models split into two sections — "OpenAI (API)" and
+		// "OpenAI (OAuth)" — so each model is tied to the credential
+		// that actually serves it. Models in both catalogs always route
+		// through the ChatGPT login, so they only appear in the OAuth
+		// section.
+		openai := provider.ID == catwalk.InferenceProviderOpenAI
+		hasKey := openai && providerConfig.HasAPIKey(m.com.Workspace.Resolver())
+		hasOAuth := openai && providerConfig.OAuthToken != nil
+		apiName, apiConfigured := openAIAPSection(name, providerConfigured, hasKey, hasOAuth)
+
+		group := NewModelGroup(t, apiName, apiConfigured)
 		for _, model := range displayProvider.Models {
+			if hasOAuth && providerConfig.IsChatGPTModel(model.ID) {
+				continue
+			}
 			item := NewModelItem(t, provider, model, m.modelType, false)
 			group.AppendItems(item)
 			itemsMap[item.ID()] = item
@@ -452,6 +467,10 @@ func (m *Models) setProviderItems() error {
 		}
 
 		groups = append(groups, group)
+
+		if openai {
+			m.appendOpenAIOAuthGroup(provider, providerConfig, currentModel, itemsMap, &selectedItemID, &groups)
+		}
 	}
 
 	if len(recentItems) > 0 {
@@ -510,4 +529,57 @@ func modelKey(providerID, modelID string) string {
 		return ""
 	}
 	return providerID + ":" + modelID
+}
+
+// signInChatGPTLabel is the placeholder entry shown in the "OpenAI (OAuth)"
+// section while no ChatGPT account is connected. Its empty model ID marks
+// it as an action rather than a selectable model.
+const signInChatGPTLabel = "Sign in with ChatGPT to use Codex models"
+
+// openAIAPSection returns the title and configured badge of the OpenAI
+// API-key section. With no credential at all the provider stays a single
+// plain section; as soon as an API key or a ChatGPT login exists, the
+// provider splits and this section is explicitly the API-key side.
+func openAIAPSection(providerName string, providerConfigured, hasKey, hasOAuth bool) (title string, configured bool) {
+	if providerConfigured && (hasKey || hasOAuth) {
+		return providerName + " (API)", hasKey
+	}
+	return providerName, providerConfigured
+}
+
+// appendOpenAIOAuthGroup adds the "OpenAI (OAuth)" section: the
+// subscription's Codex catalog when a ChatGPT account is connected, or a
+// sign-in placeholder otherwise. Signed in but without a catalog (the
+// fetch failed or is still running), the section is skipped rather than
+// shown empty.
+func (m *Models) appendOpenAIOAuthGroup(
+	provider catwalk.Provider,
+	providerConfig config.ProviderConfig,
+	currentModel config.SelectedModel,
+	itemsMap map[string]*ModelItem,
+	selectedItemID *string,
+	groups *[]ModelGroup,
+) {
+	t := m.com.Styles
+	name := cmp.Or(provider.Name, string(provider.ID)) + " (OAuth)"
+
+	group := NewModelGroup(t, name, providerConfig.OAuthToken != nil)
+
+	if providerConfig.OAuthToken != nil {
+		for _, model := range providerConfig.ChatGPTModels {
+			item := NewModelItem(t, provider, model, m.modelType, false)
+			group.AppendItems(item)
+			itemsMap[item.ID()] = item
+			if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
+				*selectedItemID = item.ID()
+			}
+		}
+	} else {
+		item := NewModelItem(t, provider, catwalk.Model{Name: signInChatGPTLabel}, m.modelType, false)
+		group.AppendItems(item)
+	}
+
+	if len(group.Items) > 0 {
+		*groups = append(*groups, group)
+	}
 }

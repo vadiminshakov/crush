@@ -146,6 +146,12 @@ type ProviderConfig struct {
 
 	// The provider models
 	Models []catwalk.Model `json:"models,omitempty" jsonschema:"description=List of models available from this provider"`
+
+	// ChatGPTModels lists the models the ChatGPT (Codex) backend grants
+	// when the provider is authenticated with a ChatGPT account. Kept
+	// separate from Models, which holds the API-key catalog, so both
+	// credentials can coexist and the request path resolves per model.
+	ChatGPTModels []catwalk.Model `json:"chatgpt_models,omitempty" jsonschema:"-"`
 }
 
 // ToProvider converts the [ProviderConfig] to a [catwalk.Provider].
@@ -180,6 +186,41 @@ func (c *ProviderConfig) ToProvider() catwalk.Provider {
 
 func (c *ProviderConfig) SetupGitHubCopilot() {
 	maps.Copy(c.ExtraHeaders, copilot.Headers())
+}
+
+// HasAPIKey reports whether the provider's api_key resolves to a usable
+// credential. The stored value is often an unresolved template like
+// $OPENAI_API_KEY, which is not a credential until the variable exists.
+func (c *ProviderConfig) HasAPIKey(resolver VariableResolver) bool {
+	if c.APIKey == "" {
+		return false
+	}
+	v, err := resolver.ResolveValue(c.APIKey)
+	return err == nil && v != ""
+}
+
+// IsChatGPTModel reports whether the model ID is part of the ChatGPT
+// catalog fetched from the Codex backend.
+func (c *ProviderConfig) IsChatGPTModel(modelID string) bool {
+	return slices.ContainsFunc(c.ChatGPTModels, func(m catwalk.Model) bool {
+		return m.ID == modelID
+	})
+}
+
+// UsesChatGPTAuth reports whether the given model of the OpenAI provider
+// is served through the ChatGPT (Codex) backend. It is when the model
+// appears in the ChatGPT catalog, or when the ChatGPT login is the only
+// credential (or the only catalog) the provider has. hasAPIKey reports
+// whether a usable API key resolves, since the stored value may still be
+// an unresolved template.
+func (c *ProviderConfig) UsesChatGPTAuth(modelID string, hasAPIKey bool) bool {
+	if c.OAuthToken == nil {
+		return false
+	}
+	if !hasAPIKey || len(c.ChatGPTModels) == 0 {
+		return true
+	}
+	return c.IsChatGPTModel(modelID)
 }
 
 type MCPType string
@@ -819,6 +860,11 @@ func (c *Config) IsConfigured() bool {
 func (c *Config) GetModel(provider, model string) *catwalk.Model {
 	if providerConfig, ok := c.Providers.Get(provider); ok {
 		for _, m := range providerConfig.Models {
+			if m.ID == model {
+				return &m
+			}
+		}
+		for _, m := range providerConfig.ChatGPTModels {
 			if m.ID == model {
 				return &m
 			}

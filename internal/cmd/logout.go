@@ -27,19 +27,24 @@ var logoutCmd = &cobra.Command{
 	Long: `Logout Crush from a specified platform, removing stored credentials.
 The platform should be provided as an argument.
 If no argument is given, a list of logged-in platforms will be shown.
-Available platforms are: hyper, copilot.`,
+Available platforms are: hyper, copilot, openai.`,
 	Example: `
 # Sign out from Charm Hyper
 crush logout hyper
 
 # Sign out from GitHub Copilot
 crush logout copilot
+
+# Sign out from your ChatGPT (OpenAI) account
+crush logout openai
   `,
 	ValidArgs: []cobra.Completion{
 		"hyper",
 		"copilot",
 		"github",
 		"github-copilot",
+		"openai",
+		"chatgpt",
 	},
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -84,6 +89,8 @@ crush logout copilot
 			return logoutHyper(c, ws.ID)
 		case "copilot", "github", "github-copilot":
 			return logoutCopilot(c, ws.ID)
+		case "openai", "chatgpt":
+			return logoutOpenAI(c, ws.ID)
 		default:
 			return fmt.Errorf("unknown platform: %s", provider)
 		}
@@ -118,6 +125,25 @@ func logoutCopilot(c *client.Client, wsID string) error {
 	return nil
 }
 
+func logoutOpenAI(c *client.Client, wsID string) error {
+	ctx := getLogoutContext()
+
+	// Logout clears every OpenAI credential: the ChatGPT token and its
+	// model catalog, and the API key too. The API key mirrors the access
+	// token when it came from the OAuth flow, and an explicit logout
+	// should leave nothing behind either way.
+	if err := cmp.Or(
+		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.openai.oauth"),
+		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.openai.chatgpt_models"),
+		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.openai.api_key"),
+	); err != nil {
+		return err
+	}
+
+	fmt.Println(logoutHeaderStyle.Render("Successfully logged out of OpenAI."))
+	return nil
+}
+
 func pickLoggedInProvider(c *client.Client, wsID string) (string, error) {
 	ctx := getLogoutContext()
 
@@ -136,6 +162,7 @@ func pickLoggedInProvider(c *client.Client, wsID string) (string, error) {
 	oauthProviders := map[string]string{
 		"hyper":   "Hyper",
 		"copilot": "GitHub Copilot",
+		"openai":  "OpenAI (ChatGPT)",
 	}
 
 	var loggedIn []loggedInProvider

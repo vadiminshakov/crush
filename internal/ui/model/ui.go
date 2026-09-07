@@ -561,6 +561,14 @@ func (m *UI) Init() tea.Cmd {
 	if m.com.IsHyper() {
 		cmds = append(cmds, m.fetchHyperCredits())
 	}
+	// Prime the ChatGPT model catalog: a signed-in OpenAI provider
+	// whose catalog is missing (the fetch at login failed, or the
+	// credentials predate it) refills lazily, so the models dialog shows
+	// the subscription section as soon as it is opened.
+	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
+		_ = m.com.Workspace.UpdateAgentModel(context.TODO())
+		return nil
+	}))
 	// Prime the memoized busy/permission state off-thread.
 	if cmd := m.dispatchBusyRefresh(); cmd != nil {
 		cmds = append(cmds, cmd)
@@ -1888,6 +1896,29 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		if m.focus == uiFocusEditor {
 			cmds = append(cmds, m.textarea.Focus())
 		}
+	case dialog.ActionCloseOAuth:
+		// Same as ActionClose, but with a cleanup command that cancels
+		// the in-flight authorization before the dialog goes away.
+		m.dialog.CloseFrontDialog()
+
+		if msg.Cmd != nil {
+			cmds = append(cmds, msg.Cmd)
+		}
+
+		if isOnboarding {
+			if cmd := m.openModelsDialog(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
+		if m.focus == uiFocusEditor {
+			cmds = append(cmds, m.textarea.Focus())
+		}
+	case dialog.ActionSelectAuthMethod:
+		m.dialog.CloseDialog(dialog.AuthMethodID)
+		if cmd := m.openAuthenticationDialogWithMethod(msg.Provider, msg.Model, msg.ModelType, msg.UseOAuth); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case dialog.ActionCmd:
 		if msg.Cmd != nil {
 			cmds = append(cmds, msg.Cmd)
@@ -2328,6 +2359,32 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		m.com.Workspace.ImportCopilot()
 	}
 
+	// The OpenAI provider serves two catalogs: API-key models and the
+	// ChatGPT (Codex) models a subscription grants. The OAuth section's
+	// sign-in placeholder is not a real model, and an API-section model
+	// needs an API key the ChatGPT login cannot substitute for.
+	if providerID == string(catwalk.InferenceProviderOpenAI) {
+		providerCfg, _ := cfg.Providers.Get(providerID)
+		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
+		if msg.Model.Model == "" {
+			m.dialog.CloseDialog(dialog.ModelsID)
+			if providerCfg.OAuthToken != nil && !msg.ReAuthenticate {
+				// A sign-in just completed: reopen the list so the user
+				// can pick one of the freshly fetched Codex models.
+				m.dialog.CloseDialog(dialog.OAuthID)
+				if cmd := m.openModelsDialog(); cmd != nil {
+					return cmd
+				}
+				return nil
+			}
+			return m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType)
+		}
+		if !providerCfg.IsChatGPTModel(msg.Model.Model) && !hasAPIKey {
+			m.dialog.CloseDialog(dialog.ModelsID)
+			return m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType)
+		}
+	}
+
 	if !isConfigured() || msg.ReAuthenticate {
 		m.dialog.CloseDialog(dialog.ModelsID)
 		if cmd := m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType); cmd != nil {
@@ -2409,7 +2466,50 @@ func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.Se
 		dlg, cmd = dialog.NewOAuthHyper(m.com, isOnboarding, provider, model, modelType)
 	case catwalk.InferenceProviderCopilot:
 		dlg, cmd = dialog.NewOAuthCopilot(m.com, isOnboarding, provider, model, modelType)
+	case catwalk.InferenceProviderOpenAI:
+		providerCfg, _ := m.com.Config().Providers.Get(string(provider.ID))
+		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
+		switch {
+		case model.Model == "" || (providerCfg.OAuthToken != nil && providerCfg.IsChatGPTModel(model.Model)):
+			// The sign-in placeholder or a ChatGPT-catalog model: the
+			// request rides the OAuth token.
+			dlg, cmd = dialog.NewOAuthOpenAI(m.com, isOnboarding, provider, model, modelType)
+		case !hasAPIKey && providerCfg.OAuthToken == nil:
+			// No credentials at all: let the user pick the method.
+			dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
+		default:
+			// A ChatGPT login exists but the chosen model needs an API key.
+			dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
+		}
 	default:
+		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
+	}
+
+	if m.dialog.ContainsDialog(dlg.ID()) {
+		m.dialog.BringToFront(dlg.ID())
+		return nil
+	}
+
+	m.dialog.OpenDialogWithGrace(dlg)
+	return cmd
+}
+
+// openAuthenticationDialogWithMethod opens the authentication dialog for
+// the method the user chose in the auth method picker. Choosing OAuth
+// clears the model: the ChatGPT catalog is only known after sign-in, so
+// the flow ends by reopening the models list rather than selecting the
+// API-key model the user happened to start from.
+func (m *UI) openAuthenticationDialogWithMethod(provider catwalk.Provider, model config.SelectedModel, modelType config.SelectedModelType, useOAuth bool) tea.Cmd {
+	isOnboarding := m.state == uiOnboarding
+
+	var (
+		dlg dialog.Dialog
+		cmd tea.Cmd
+	)
+	if useOAuth {
+		model.Model = ""
+		dlg, cmd = dialog.NewOAuthOpenAI(m.com, isOnboarding, provider, model, modelType)
+	} else {
 		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
 	}
 

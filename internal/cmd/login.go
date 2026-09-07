@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
 	"github.com/charmbracelet/crush/internal/oauth/hyper"
+	"github.com/charmbracelet/crush/internal/oauth/openai"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -23,13 +24,16 @@ var loginCmd = &cobra.Command{
 	Short:   "Login Crush to a platform",
 	Long: `Login Crush to a specified platform.
 The platform should be provided as an argument.
-Available platforms are: hyper, copilot.`,
+Available platforms are: hyper, copilot, openai.`,
 	Example: `
 # Authenticate with Charm Hyper
 crush login
 
 # Authenticate with GitHub Copilot
 crush login copilot
+
+# Authenticate with a ChatGPT (OpenAI) account
+crush login openai
 
 # Force re-authentication even if already logged in
 crush login -f copilot
@@ -39,6 +43,8 @@ crush login -f copilot
 		"copilot",
 		"github",
 		"github-copilot",
+		"openai",
+		"chatgpt",
 	},
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,6 +64,8 @@ crush login -f copilot
 			return loginHyper(ws, force)
 		case "copilot", "github", "github-copilot":
 			return loginCopilot(ws, force)
+		case "openai", "chatgpt":
+			return loginOpenAI(ws, force)
 		default:
 			return fmt.Errorf("unknown platform: %s", args[0])
 		}
@@ -205,6 +213,56 @@ func loginCopilot(ws workspace.Workspace, force bool) error {
 
 	fmt.Println()
 	fmt.Println("You're now authenticated with GitHub Copilot!")
+	return nil
+}
+
+func loginOpenAI(ws workspace.Workspace, force bool) error {
+	ctx := getLoginContext()
+
+	if !force {
+		cfg := ws.Config()
+		if cfg != nil {
+			if pc, ok := cfg.Providers.Get("openai"); ok && pc.OAuthToken != nil {
+				fmt.Println("You are already logged in to OpenAI with a ChatGPT account.")
+				fmt.Println("Use --force to re-authenticate.")
+				return nil
+			}
+		}
+	}
+
+	fmt.Println("Starting OpenAI OAuth flow...")
+	flow, err := openai.StartBrowserFlow()
+	if err != nil {
+		return fmt.Errorf("failed to start OAuth flow: %w", err)
+	}
+	defer flow.Close()
+
+	fmt.Println()
+	fmt.Println("Press enter to open the browser and authenticate with your ChatGPT account.")
+	fmt.Println("The page closes itself once you're done.")
+	fmt.Println()
+	lipgloss.Println(lipgloss.NewStyle().Hyperlink(flow.URL(), "id=openai").Render(flow.URL()))
+	fmt.Println()
+	waitEnter()
+	// The handoff page opens the authorization URL in a tab that can close
+	// itself when finished; opening the raw URL would leave the tab behind,
+	// since browsers refuse to close it after a consent flow.
+	if err := browser.OpenURL(flow.StartURL()); err != nil {
+		fmt.Println("Could not open the browser. You'll need to manually open the URL above in your browser.")
+	}
+
+	fmt.Println("Waiting for authorization...")
+	token, err := flow.Wait(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := ws.SetProviderAPIKey(config.ScopeGlobal, "openai", token); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("You're now authenticated with your ChatGPT account!")
 	return nil
 }
 
