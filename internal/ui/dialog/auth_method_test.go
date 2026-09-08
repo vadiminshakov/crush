@@ -54,6 +54,19 @@ func TestAuthMethodTogglesToAPIKey(t *testing.T) {
 	selected, ok = action.(ActionSelectAuthMethod)
 	require.True(t, ok)
 	require.True(t, selected.UseOAuth)
+
+	// Left/right toggle as well, since the cards sit side by side.
+	m.HandleMsg(tea.KeyPressMsg{Code: tea.KeyRight})
+	action = m.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	selected, ok = action.(ActionSelectAuthMethod)
+	require.True(t, ok)
+	require.False(t, selected.UseOAuth)
+
+	m.HandleMsg(tea.KeyPressMsg{Code: tea.KeyLeft})
+	action = m.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	selected, ok = action.(ActionSelectAuthMethod)
+	require.True(t, ok)
+	require.True(t, selected.UseOAuth)
 }
 
 func TestAuthMethodClose(t *testing.T) {
