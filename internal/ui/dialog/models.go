@@ -444,10 +444,10 @@ func (m *Models) setProviderItems() error {
 		// The OpenAI provider carries two credentials that can coexist:
 		// an API key and a ChatGPT (OAuth) login. As soon as one exists,
 		// the models split into two sections — "OpenAI (API)" and
-		// "OpenAI (OAuth)" — so each model is tied to the credential
-		// that actually serves it. Models in both catalogs always route
-		// through the ChatGPT login, so they only appear in the OAuth
-		// section.
+		// "OpenAI (OAuth)". Models the ChatGPT catalog also grants stay
+		// in the API section so the catalogue never loses entries; the
+		// request path still picks the credential that serves each
+		// model.
 		openai := provider.ID == catwalk.InferenceProviderOpenAI
 		hasKey := openai && providerConfig.HasAPIKey(m.com.Workspace.Resolver())
 		hasOAuth := openai && providerConfig.OAuthToken != nil
@@ -455,9 +455,6 @@ func (m *Models) setProviderItems() error {
 
 		group := NewModelGroup(t, apiName, apiConfigured)
 		for _, model := range displayProvider.Models {
-			if hasOAuth && providerConfig.IsChatGPTModel(model.ID) {
-				continue
-			}
 			item := NewModelItem(t, provider, model, m.modelType, false)
 			group.AppendItems(item)
 			itemsMap[item.ID()] = item
