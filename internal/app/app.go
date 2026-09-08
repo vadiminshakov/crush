@@ -615,12 +615,11 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 		return largeModelCfg
 	}
 
-	// A ChatGPT-authenticated OpenAI provider serves models through the
-	// Codex backend, so an API-key default small model would either fail
-	// or silently bill the API key. When the large model rides the
-	// ChatGPT login, pick the small model from the ChatGPT catalog too.
+	// A ChatGPT-authenticated OpenAI provider only serves the models the
+	// subscription grants, so the default small model must come from that
+	// catalog as well.
 	if providerID == string(catwalk.InferenceProviderOpenAI) && largeModelCfg.Provider == providerID {
-		if pc, ok := cfg.Providers.Get(providerID); ok && pc.UsesChatGPTAuth(largeModelCfg.Model, pc.HasAPIKey(app.config.Resolver())) {
+		if pc, ok := cfg.Providers.Get(providerID); ok && pc.OAuthToken != nil {
 			if small := chatGPTSmallModel(pc); small != nil {
 				return config.SelectedModel{
 					Provider:        providerID,

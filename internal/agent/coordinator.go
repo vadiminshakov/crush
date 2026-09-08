@@ -1233,12 +1233,10 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 
 	switch providerCfg.Type {
 	case openai.Name:
-		// A ChatGPT login coexists with a manually entered API key: the
-		// model decides which credential serves the request. Models from
-		// the ChatGPT catalog (or any model, when the login is the only
-		// credential) go through the Codex backend with the OAuth token.
+		// A ChatGPT login is the provider's single credential: every
+		// request goes through the Codex backend with the OAuth token.
 		token := providerCfg.OAuthToken
-		if token != nil && providerCfg.UsesChatGPTAuth(model.Model, apiKey != "") {
+		if token != nil {
 			baseURL = openaioauth.CodexBaseURL
 			apiKey = token.AccessToken
 			headers["originator"] = "crush"

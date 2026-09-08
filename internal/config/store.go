@@ -567,6 +567,9 @@ func (s *ConfigStore) SetTransparentBackground(scope Scope, enabled bool) error 
 }
 
 // SetProviderAPIKey sets the API key for a provider and persists it.
+// The OpenAI provider holds exactly one credential: storing a ChatGPT
+// token removes a previously entered API key, and storing an API key
+// removes a previous ChatGPT login.
 func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey any) error {
 	var providerConfig ProviderConfig
 	var exists bool
@@ -578,7 +581,25 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 		if err := s.SetConfigField(scope, fmt.Sprintf("providers.%s.api_key", providerID), v); err != nil {
 			return fmt.Errorf("failed to save api key to config file: %w", err)
 		}
-		setKeyOrToken = func() { providerConfig.APIKey = v }
+		setKeyOrToken = func() {
+			providerConfig.APIKey = v
+			if providerID == string(catwalk.InferenceProviderOpenAI) {
+				// Either OAuth or an API key, never both: the login
+				// leaves nothing usable on the API-key side behind.
+				providerConfig.OAuthToken = nil
+				providerConfig.ChatGPTModels = nil
+			}
+		}
+		if providerID == string(catwalk.InferenceProviderOpenAI) {
+			// Either OAuth or an API key, never both: the new key
+			// leaves nothing usable on the ChatGPT side behind.
+			if err := s.RemoveConfigField(scope, fmt.Sprintf("providers.%s.oauth", providerID)); err != nil {
+				return err
+			}
+			if err := s.RemoveConfigField(scope, fmt.Sprintf("providers.%s.chatgpt_models", providerID)); err != nil {
+				return err
+			}
+		}
 	case *oauth.Token:
 		// Hold the refresh lock across the write so a peer's in-flight
 		// token exchange cannot land on top of a credential the user just
@@ -587,9 +608,6 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 		fields := map[string]any{
 			fmt.Sprintf("providers.%s.oauth", providerID): v,
 		}
-		// OpenAI keeps a manually entered API key next to the ChatGPT
-		// token: the two are resolved per model at request time, so the
-		// key must survive the login.
 		if providerID != string(catwalk.InferenceProviderOpenAI) {
 			fields[fmt.Sprintf("providers.%s.api_key", providerID)] = v.AccessToken
 		}
@@ -598,11 +616,18 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 		}); err != nil {
 			return err
 		}
+		if providerID == string(catwalk.InferenceProviderOpenAI) {
+			// Either OAuth or an API key, never both: the login retires
+			// any key that came before it.
+			if err := s.RemoveConfigField(scope, fmt.Sprintf("providers.%s.api_key", providerID)); err != nil {
+				return err
+			}
+		}
 		setKeyOrToken = func() {
 			providerConfig.OAuthToken = v
 			if providerID == string(catwalk.InferenceProviderOpenAI) {
 				isToken = true
-				// Keep any existing API key alongside the ChatGPT token.
+				providerConfig.APIKey = ""
 				return
 			}
 			providerConfig.APIKey = v.AccessToken
@@ -986,8 +1011,8 @@ func (s *ConfigStore) refreshLockPath(providerID string) string {
 // applyToken updates the in-memory provider config with the given token.
 func (s *ConfigStore) applyToken(providerConfig ProviderConfig, token *oauth.Token, providerID string) error {
 	providerConfig.OAuthToken = token
-	// The OpenAI provider keeps a manually entered API key next to the
-	// ChatGPT token; the request path resolves the two per model.
+	// The OpenAI provider holds exactly one credential, so a ChatGPT
+	// token means there is no API key side by side with it.
 	if providerID != string(catwalk.InferenceProviderOpenAI) {
 		providerConfig.APIKey = token.AccessToken
 	}

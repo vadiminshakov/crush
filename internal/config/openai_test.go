@@ -15,79 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUsesChatGPTAuth(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		pc        ProviderConfig
-		modelID   string
-		hasAPIKey bool
-		want      bool
-	}{
-		{
-			name: "no oauth token",
-			pc:   ProviderConfig{APIKey: "sk-key"},
-			want: false,
-		},
-		{
-			name: "oauth only serves every model",
-			pc:   ProviderConfig{OAuthToken: &oauth.Token{AccessToken: "at"}},
-			want: true,
-		},
-		{
-			name: "both credentials, model in chatgpt catalog",
-			pc: ProviderConfig{
-				APIKey:        "sk-key",
-				OAuthToken:    &oauth.Token{AccessToken: "at"},
-				ChatGPTModels: []catwalk.Model{{ID: "gpt-5.1-codex"}},
-			},
-			hasAPIKey: true,
-			modelID:   "gpt-5.1-codex",
-			want:      true,
-		},
-		{
-			name: "both credentials, api model",
-			pc: ProviderConfig{
-				APIKey:        "sk-key",
-				OAuthToken:    &oauth.Token{AccessToken: "at"},
-				ChatGPTModels: []catwalk.Model{{ID: "gpt-5.1-codex"}},
-			},
-			hasAPIKey: true,
-			modelID:   "gpt-5.1",
-			want:      false,
-		},
-		{
-			name: "both credentials, unknown catalog falls back to chatgpt",
-			pc: ProviderConfig{
-				APIKey:     "sk-key",
-				OAuthToken: &oauth.Token{AccessToken: "at"},
-			},
-			hasAPIKey: true,
-			modelID:   "gpt-5.1",
-			want:      true,
-		},
-		{
-			name: "unresolved api key template counts as absent",
-			pc: ProviderConfig{
-				APIKey:        "$OPENAI_API_KEY",
-				OAuthToken:    &oauth.Token{AccessToken: "at"},
-				ChatGPTModels: []catwalk.Model{{ID: "gpt-5.1-codex"}},
-			},
-			hasAPIKey: false,
-			modelID:   "gpt-5.1",
-			want:      true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tt.want, tt.pc.UsesChatGPTAuth(tt.modelID, tt.hasAPIKey))
-		})
-	}
-}
-
 func TestGetModelIncludesChatGPTModels(t *testing.T) {
 	t.Parallel()
 
@@ -183,10 +110,11 @@ func TestHasAPIKey(t *testing.T) {
 	})
 }
 
-// TestSetProviderAPIKeyKeepsOpenAIKey proves a ChatGPT login does not
-// clobber a manually entered OpenAI API key, while the same call for
-// Copilot still mirrors the access token into api_key.
-func TestSetProviderAPIKeyKeepsOpenAIKey(t *testing.T) {
+// TestSetProviderAPIKeyOpenAIIsEitherOr proves the OpenAI provider holds
+// exactly one credential: a ChatGPT login retires a previously entered
+// API key, and entering an API key retires a previous ChatGPT login.
+// Copilot keeps mirroring the access token into api_key as before.
+func TestSetProviderAPIKeyOpenAIIsEitherOr(t *testing.T) {
 	// Not parallel: t.Setenv below.
 
 	// Point config discovery at the test sandbox: the write below
@@ -227,7 +155,7 @@ func TestSetProviderAPIKeyKeepsOpenAIKey(t *testing.T) {
 		}
 	}
 
-	t.Run("openai", func(t *testing.T) {
+	t.Run("chatgpt login retires the api key", func(t *testing.T) {
 		store := newStore(t, "openai", `{
 			"providers": {
 				"openai": {
@@ -242,10 +170,41 @@ func TestSetProviderAPIKeyKeepsOpenAIKey(t *testing.T) {
 
 		pc, ok := store.Config().Providers.Get("openai")
 		require.True(t, ok)
-		require.Equal(t, "sk-keep", pc.APIKey, "the manually entered API key must survive the ChatGPT login")
+		require.Empty(t, pc.APIKey, "the ChatGPT login replaces the API key")
 		require.Equal(t, token, pc.OAuthToken)
-		require.Equal(t, "gpt-5.1-codex", pc.ChatGPTModels[0].ID, "the codex catalog lands in its own field")
+		require.Equal(t, "gpt-5.1-codex", pc.ChatGPTModels[0].ID, "the subscription catalog lands in its own field")
 		require.Equal(t, "gpt-5.1", pc.Models[0].ID, "the API catalog is untouched")
+
+		disk, err := os.ReadFile(store.globalDataPath)
+		require.NoError(t, err)
+		require.NotContains(t, string(disk), "sk-keep", "the retired key is gone from the config file")
+		require.Contains(t, string(disk), "chatgpt-rt", "the login is persisted")
+	})
+
+	t.Run("api key retires the chatgpt login", func(t *testing.T) {
+		store := newStore(t, "openai", `{
+			"providers": {
+				"openai": {
+					"id": "openai",
+					"api_key": "",
+					"oauth": {"access_token": "old-at", "refresh_token": "old-rt"},
+					"chatgpt_models": [{"id": "gpt-5.6-luna"}]
+				}
+			}
+		}`)
+
+		require.NoError(t, store.SetProviderAPIKey(ScopeGlobal, "openai", "sk-new"))
+
+		pc, ok := store.Config().Providers.Get("openai")
+		require.True(t, ok)
+		require.Equal(t, "sk-new", pc.APIKey)
+		require.Nil(t, pc.OAuthToken, "the API key replaces the ChatGPT login")
+		require.Empty(t, pc.ChatGPTModels, "the subscription catalog goes with it")
+
+		disk, err := os.ReadFile(store.globalDataPath)
+		require.NoError(t, err)
+		require.NotContains(t, string(disk), "old-rt", "the retired login is gone from the config file")
+		require.NotContains(t, string(disk), "gpt-5.6-luna")
 	})
 
 	t.Run("copilot", func(t *testing.T) {

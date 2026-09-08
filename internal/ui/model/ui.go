@@ -2359,18 +2359,16 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		m.com.Workspace.ImportCopilot()
 	}
 
-	// The OpenAI provider serves two catalogs: API-key models and the
-	// ChatGPT (Codex) models a subscription grants. The OAuth section's
-	// sign-in placeholder is not a real model, and an API-section model
-	// needs an API key the ChatGPT login cannot substitute for.
+	// The OpenAI provider holds exactly one credential: a ChatGPT login
+	// or an API key. The sign-in placeholder is not a real model, and a
+	// catalog model needs one of the credentials before it can serve.
 	if providerID == string(catwalk.InferenceProviderOpenAI) {
 		providerCfg, _ := cfg.Providers.Get(providerID)
-		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
 		if msg.Model.Model == "" {
 			m.dialog.CloseDialog(dialog.ModelsID)
 			if providerCfg.OAuthToken != nil && !msg.ReAuthenticate {
 				// A sign-in just completed: reopen the list so the user
-				// can pick one of the freshly fetched Codex models.
+				// can pick one of the freshly fetched subscription models.
 				m.dialog.CloseDialog(dialog.OAuthID)
 				if cmd := m.openModelsDialog(); cmd != nil {
 					return cmd
@@ -2379,7 +2377,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 			}
 			return m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType)
 		}
-		if !providerCfg.IsChatGPTModel(msg.Model.Model) && !hasAPIKey {
+		if providerCfg.OAuthToken == nil && !providerCfg.HasAPIKey(m.com.Workspace.Resolver()) {
 			m.dialog.CloseDialog(dialog.ModelsID)
 			return m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType)
 		}
@@ -2470,15 +2468,15 @@ func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.Se
 		providerCfg, _ := m.com.Config().Providers.Get(string(provider.ID))
 		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
 		switch {
-		case model.Model == "" || (providerCfg.OAuthToken != nil && providerCfg.IsChatGPTModel(model.Model)):
-			// The sign-in placeholder or a ChatGPT-catalog model: the
-			// request rides the OAuth token.
+		case model.Model == "" || providerCfg.OAuthToken != nil:
+			// The sign-in placeholder, or a re-authentication while the
+			// ChatGPT login is the credential in force.
 			dlg, cmd = dialog.NewOAuthOpenAI(m.com, isOnboarding, provider, model, modelType)
-		case !hasAPIKey && providerCfg.OAuthToken == nil:
-			// No credentials at all: let the user pick the method.
+		case !hasAPIKey:
+			// No credential at all: let the user pick the method.
 			dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
 		default:
-			// A ChatGPT login exists but the chosen model needs an API key.
+			// An API key is the credential in force: edit it.
 			dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
 		}
 	default:

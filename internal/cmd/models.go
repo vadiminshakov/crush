@@ -58,33 +58,30 @@ crush models gpt5`,
 				configured: true,
 			}
 
-			// The OpenAI provider carries two catalogs: API-key models
-			// and the ChatGPT subscription's Codex models. The TUI
-			// splits them into "OpenAI (API)" and "OpenAI (OAuth)"
-			// sections; here they merge into one list.
-			modelSets := [][]catwalk.Model{provider.Models, provider.ChatGPTModels}
+			// The OpenAI provider holds exactly one credential. Signed
+			// in with ChatGPT, only the models the subscription grants are
+			// usable; an API key lists the regular catalog.
+			var models []catwalk.Model
+			if providerID == string(catwalk.InferenceProviderOpenAI) && provider.OAuthToken != nil {
+				models = provider.ChatGPTModels
+			} else {
+				models = provider.Models
+			}
 
-			seen := make(map[string]bool)
-			for _, models := range modelSets {
-				for _, model := range models {
-					if seen[model.ID] {
+			for _, model := range models {
+				if term != "" {
+					matched := false
+					for _, s := range []string{provider.ID, provider.Name, model.ID, model.Name} {
+						if strings.Contains(strings.ToLower(s), term) {
+							matched = true
+							break
+						}
+					}
+					if !matched {
 						continue
 					}
-					if term != "" {
-						matched := false
-						for _, s := range []string{provider.ID, provider.Name, model.ID, model.Name} {
-							if strings.Contains(strings.ToLower(s), term) {
-								matched = true
-								break
-							}
-						}
-						if !matched {
-							continue
-						}
-					}
-					seen[model.ID] = true
-					entry.models = append(entry.models, model.ID)
 				}
+				entry.models = append(entry.models, model.ID)
 			}
 			if len(entry.models) > 0 {
 				slices.Sort(entry.models)

@@ -441,19 +441,28 @@ func (m *Models) setProviderItems() error {
 
 		name := cmp.Or(displayProvider.Name, providerID)
 
-		// The OpenAI provider carries two credentials that can coexist:
-		// an API key and a ChatGPT (OAuth) login. As soon as one exists,
-		// the models split into two sections — "OpenAI (API)" and
-		// "OpenAI (OAuth)". Models the ChatGPT catalog also grants stay
-		// in the API section so the catalogue never loses entries; the
-		// request path still picks the credential that serves each
-		// model.
-		openai := provider.ID == catwalk.InferenceProviderOpenAI
-		hasKey := openai && providerConfig.HasAPIKey(m.com.Workspace.Resolver())
-		hasOAuth := openai && providerConfig.OAuthToken != nil
-		apiName, apiConfigured := openAIAPSection(name, providerConfigured, hasKey, hasOAuth)
+		// The OpenAI provider holds exactly one credential. Signed in
+		// with ChatGPT, only the models the subscription grants are
+		// usable, so they are all the section lists; the API catalog
+		// would only 404. Without a login the section is the API
+		// catalog, plus an entry that starts the ChatGPT sign-in.
+		if provider.ID == catwalk.InferenceProviderOpenAI && providerConfig.OAuthToken != nil {
+			group := NewModelGroup(t, name, true)
+			for _, model := range providerConfig.ChatGPTModels {
+				item := NewModelItem(t, provider, model, m.modelType, false)
+				group.AppendItems(item)
+				itemsMap[item.ID()] = item
+				if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
+					selectedItemID = item.ID()
+				}
+			}
+			if len(group.Items) > 0 {
+				groups = append(groups, group)
+			}
+			continue
+		}
 
-		group := NewModelGroup(t, apiName, apiConfigured)
+		group := NewModelGroup(t, name, providerConfigured)
 		for _, model := range displayProvider.Models {
 			item := NewModelItem(t, provider, model, m.modelType, false)
 			group.AppendItems(item)
@@ -462,12 +471,13 @@ func (m *Models) setProviderItems() error {
 				selectedItemID = item.ID()
 			}
 		}
+		if provider.ID == catwalk.InferenceProviderOpenAI {
+			// Not signed in yet: invite the ChatGPT login. The empty
+			// model ID marks the row as an action rather than a model.
+			group.AppendItems(NewModelItem(t, provider, catwalk.Model{Name: signInChatGPTLabel}, m.modelType, false))
+		}
 
 		groups = append(groups, group)
-
-		if openai {
-			m.appendOpenAIOAuthGroup(provider, providerConfig, currentModel, itemsMap, &selectedItemID, &groups)
-		}
 	}
 
 	if len(recentItems) > 0 {
@@ -528,55 +538,7 @@ func modelKey(providerID, modelID string) string {
 	return providerID + ":" + modelID
 }
 
-// signInChatGPTLabel is the placeholder entry shown in the "OpenAI (OAuth)"
-// section while no ChatGPT account is connected. Its empty model ID marks
-// it as an action rather than a selectable model.
+// signInChatGPTLabel is the placeholder entry shown in the OpenAI section
+// while no ChatGPT account is connected. Its empty model ID marks it as an
+// action rather than a selectable model.
 const signInChatGPTLabel = "Sign in with ChatGPT to use Codex models"
-
-// openAIAPSection returns the title and configured badge of the OpenAI
-// API-key section. With no credential at all the provider stays a single
-// plain section; as soon as an API key or a ChatGPT login exists, the
-// provider splits and this section is explicitly the API-key side.
-func openAIAPSection(providerName string, providerConfigured, hasKey, hasOAuth bool) (title string, configured bool) {
-	if providerConfigured && (hasKey || hasOAuth) {
-		return providerName + " (API)", hasKey
-	}
-	return providerName, providerConfigured
-}
-
-// appendOpenAIOAuthGroup adds the "OpenAI (OAuth)" section: the
-// subscription's Codex catalog when a ChatGPT account is connected, or a
-// sign-in placeholder otherwise. Signed in but without a catalog (the
-// fetch failed or is still running), the section is skipped rather than
-// shown empty.
-func (m *Models) appendOpenAIOAuthGroup(
-	provider catwalk.Provider,
-	providerConfig config.ProviderConfig,
-	currentModel config.SelectedModel,
-	itemsMap map[string]*ModelItem,
-	selectedItemID *string,
-	groups *[]ModelGroup,
-) {
-	t := m.com.Styles
-	name := cmp.Or(provider.Name, string(provider.ID)) + " (OAuth)"
-
-	group := NewModelGroup(t, name, providerConfig.OAuthToken != nil)
-
-	if providerConfig.OAuthToken != nil {
-		for _, model := range providerConfig.ChatGPTModels {
-			item := NewModelItem(t, provider, model, m.modelType, false)
-			group.AppendItems(item)
-			itemsMap[item.ID()] = item
-			if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
-				*selectedItemID = item.ID()
-			}
-		}
-	} else {
-		item := NewModelItem(t, provider, catwalk.Model{Name: signInChatGPTLabel}, m.modelType, false)
-		group.AppendItems(item)
-	}
-
-	if len(group.Items) > 0 {
-		*groups = append(*groups, group)
-	}
-}
