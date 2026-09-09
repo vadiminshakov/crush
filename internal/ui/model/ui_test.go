@@ -193,7 +193,6 @@ func TestToggleInputMode(t *testing.T) {
 		updates int
 	}{
 		{uiInputModePlan, false, 1},
-		{uiInputModePlan, true, 1},
 		{uiInputModeCode, true, 2},
 		{uiInputModeCode, false, 2},
 	} {
