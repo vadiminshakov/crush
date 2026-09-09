@@ -397,6 +397,14 @@ func quickStyle(o quickStyleOpts) Styles {
 	planMD.H5.Prefix = "      "
 	planMD.Code.Color = hex(o.secondary)
 	planMD.Code.Bold = new(true)
+	// The card is painted in bgLeastVisible; the default inline-code chip
+	// (bgLessVisible) is only one step away from it and reads as no chip at
+	// all. bgMostVisible keeps the chip distinguishable inside the card.
+	planMD.Code.BackgroundColor = hex(o.bgMostVisible)
+	// H1 carries a primary-colored badge background in s.Markdown. renderPlanBox
+	// used to flatten it away; now that intentional backgrounds survive, pin H1
+	// to the card background so the plan heading keeps looking as it does today.
+	planMD.H1.BackgroundColor = hex(o.bgLeastVisible)
 	planMD.CodeBlock.Color = hex(o.fgBase)
 	s.PlanMarkdown = withMarkdownBackground(planMD, hex(o.bgLeastVisible))
 
@@ -531,12 +539,17 @@ func quickStyle(o quickStyleOpts) Styles {
 			Color:           plainFg,
 			BackgroundColor: plainBg,
 		},
+		// Inline code is the one primitive that must NOT take plainFg/plainBg:
+		// with both matching the surrounding text it renders identically to it,
+		// leaving only the Prefix/Suffix spaces to hint at a code span. A step up
+		// in background (and a slightly brighter foreground) keeps the quiet
+		// palette while making the chip readable.
 		Code: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Prefix:          CodespanPadding,
 				Suffix:          CodespanPadding,
-				Color:           plainFg,
-				BackgroundColor: plainBg,
+				Color:           hex(o.fgSubtle),
+				BackgroundColor: hex(o.bgLessVisible),
 			},
 		},
 		CodeBlock: ansi.StyleCodeBlock{
