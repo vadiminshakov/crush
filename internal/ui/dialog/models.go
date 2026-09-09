@@ -444,8 +444,7 @@ func (m *Models) setProviderItems() error {
 		// The OpenAI provider holds exactly one credential. Signed in
 		// with ChatGPT, only the models the subscription grants are
 		// usable, so they are all the section lists; the API catalog
-		// would only 404. Without a login the section is the API
-		// catalog, plus an entry that starts the ChatGPT sign-in.
+		// would only 404. Without a login the section is the API catalog.
 		if provider.ID == catwalk.InferenceProviderOpenAI && providerConfig.OAuthToken != nil {
 			group := NewModelGroup(t, name, true)
 			for _, model := range providerConfig.ChatGPTModels {
@@ -470,11 +469,6 @@ func (m *Models) setProviderItems() error {
 			if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
 				selectedItemID = item.ID()
 			}
-		}
-		if provider.ID == catwalk.InferenceProviderOpenAI {
-			// Not signed in yet: invite the ChatGPT login. The empty
-			// model ID marks the row as an action rather than a model.
-			group.AppendItems(NewModelItem(t, provider, catwalk.Model{Name: signInChatGPTLabel}, m.modelType, false))
 		}
 
 		groups = append(groups, group)
@@ -537,8 +531,3 @@ func modelKey(providerID, modelID string) string {
 	}
 	return providerID + ":" + modelID
 }
-
-// signInChatGPTLabel is the placeholder entry shown in the OpenAI section
-// while no ChatGPT account is connected. Its empty model ID marks it as an
-// action rather than a selectable model.
-const signInChatGPTLabel = "Sign in with ChatGPT to use Codex models"

@@ -2360,8 +2360,10 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	}
 
 	// The OpenAI provider holds exactly one credential: a ChatGPT login
-	// or an API key. The sign-in placeholder is not a real model, and a
-	// catalog model needs one of the credentials before it can serve.
+	// or an API key. The empty model ID marks the OAuth flow's hand-off
+	// message (sign-in completed, or the method choice going to OAuth),
+	// and a catalog model needs one of the credentials before it can
+	// serve.
 	if providerID == string(catwalk.InferenceProviderOpenAI) {
 		providerCfg, _ := cfg.Providers.Get(providerID)
 		if msg.Model.Model == "" {
