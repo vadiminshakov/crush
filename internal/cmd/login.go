@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/crush/internal/oauth/hyper"
 	"github.com/charmbracelet/crush/internal/oauth/openai"
 	"github.com/charmbracelet/crush/internal/workspace"
+	"github.com/charmbracelet/x/exp/charmtone"
+	"github.com/charmbracelet/x/term"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
@@ -230,24 +232,30 @@ func loginOpenAI(ws workspace.Workspace, force bool) error {
 		}
 	}
 
-	fmt.Println("Starting OpenAI OAuth flow...")
 	flow, err := openai.StartBrowserFlow()
 	if err != nil {
 		return fmt.Errorf("failed to start OAuth flow: %w", err)
 	}
 	defer flow.Close()
 
+	url := flow.StartURL()
 	fmt.Println()
-	fmt.Println("Press enter to open the browser and authenticate with your ChatGPT account.")
-	fmt.Println("The page closes itself once you're done.")
+	lipgloss.Println(
+		lipgloss.NewStyle().Bold(true).Foreground(charmtone.Hazy).Render("Press enter key to open the following ") +
+			lipgloss.NewStyle().Bold(true).Foreground(charmtone.Guac).Render("URL..."),
+	)
 	fmt.Println()
-	lipgloss.Println(lipgloss.NewStyle().Hyperlink(flow.URL(), "id=openai").Render(flow.URL()))
+	lipgloss.Println(lipgloss.NewStyle().Hyperlink(url, "id=openai").Foreground(charmtone.Smoke).Render(url))
 	fmt.Println()
-	waitEnter()
+	fmt.Println(lipgloss.NewStyle().Foreground(charmtone.Squid).Render("enter open · c copy url · esc back · ctrl+c quit"))
+	if !promptLoginKey(url) {
+		fmt.Println("Login cancelled.")
+		return nil
+	}
 	// The handoff page opens the authorization URL in a tab that can close
 	// itself when finished; opening the raw URL would leave the tab behind,
 	// since browsers refuse to close it after a consent flow.
-	if err := browser.OpenURL(flow.StartURL()); err != nil {
+	if err := browser.OpenURL(url); err != nil {
 		fmt.Println("Could not open the browser. You'll need to manually open the URL above in your browser.")
 	}
 
@@ -278,4 +286,43 @@ func getLoginContext() context.Context {
 
 func waitEnter() {
 	_, _ = fmt.Scanln()
+}
+
+// promptLoginKey reads single keypresses until the user opens the browser
+// with enter, copies the URL with c, or cancels with esc or ctrl+c. It
+// reports whether the browser should be opened.
+func promptLoginKey(url string) bool {
+	if !term.IsTerminal(os.Stdin.Fd()) {
+		waitEnter()
+		return true
+	}
+
+	oldState, err := term.MakeRaw(os.Stdin.Fd())
+	if err != nil {
+		waitEnter()
+		return true
+	}
+	defer func() { _ = term.Restore(os.Stdin.Fd(), oldState) }()
+
+	var buf [1]byte
+	for {
+		if _, err := os.Stdin.Read(buf[:]); err != nil {
+			return true
+		}
+		switch buf[0] {
+		case '\r', '\n':
+			return true
+		case 'c':
+			clipboard.WriteText(url)
+			// Printing needs cooked mode; restore, print, re-raw.
+			_ = term.Restore(os.Stdin.Fd(), oldState)
+			fmt.Println("URL copied to clipboard.")
+			oldState, err = term.MakeRaw(os.Stdin.Fd())
+			if err != nil {
+				return true
+			}
+		case 0x03, 0x1b: // ctrl+c, esc
+			return false
+		}
+	}
 }

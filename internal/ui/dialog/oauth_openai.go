@@ -44,9 +44,6 @@ func (m *OAuthOpenAI) initiateAuth() tea.Msg {
 	m.flow = flow
 
 	return ActionInitiateOAuth{
-		// The handoff URL rather than the raw authorization URL: the tab
-		// it opens can close itself once authorization completes, which
-		// browsers only allow when it keeps an opener.
 		VerificationURL: flow.StartURL(),
 	}
 }
