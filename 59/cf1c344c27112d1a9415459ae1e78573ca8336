@@ -1,0 +1,36 @@
+internal/ui/styles/quickstyle.go
+  s_370f38c331bf71::t_11ccab42b9cd50 371-375,1082-1136
+internal/ui/chat/assistant.go
+  s_370f38c331bf71::t_11ccab42b9cd50 534,536-543,549-567
+internal/ui/model/status.go
+  s_370f38c331bf71::t_11ccab42b9cd50 22-28,56-61,87-91,93
+internal/ui/styles/styles.go
+  s_370f38c331bf71::t_11ccab42b9cd50 126
+internal/ui/model/ui.go
+  s_370f38c331bf71::t_11ccab42b9cd50 225-232,789-797,859-866,2687-2690,2724-2728,4033-4035,4061,4063-4065,4070-4076,4382-4384,4869-4873,4876-4884,4886-4889,4892-4907,4910,5033,5053
+internal/ui/common/markdown.go
+  s_370f38c331bf71::t_11ccab42b9cd50 22,33,113-132,154
+internal/ui/common/common_test.go
+  s_370f38c331bf71::t_11ccab42b9cd50 32-50
+  s_370f38c331bf71::t_8149291eb23237 31
+internal/ui/common/common.go
+  s_370f38c331bf71::t_11ccab42b9cd50 40-55
+internal/ui/model/ui_test.go
+  s_370f38c331bf71::t_11ccab42b9cd50 16,123-132,343-452
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "59cf1c344c27112d1a9415459ae1e78573ca8336",
+  "prompts": {},
+  "sessions": {
+    "s_370f38c331bf71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1accc07-631d-4ef9-bf6e-aa11f2a65714",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
