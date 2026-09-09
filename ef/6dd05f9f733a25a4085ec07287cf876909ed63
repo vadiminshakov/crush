@@ -1,0 +1,26 @@
+internal/ui/styles/quickstyle.go
+  s_598f925f78ed2e::t_35fb62f747ecc6 542-546,551-552
+  s_598f925f78ed2e::t_10bc6f2526f28d 400-407
+internal/ui/chat/assistant_plan_test.go
+  s_598f925f78ed2e::t_809ced18df8432 44-46,52-57,65
+  s_598f925f78ed2e::t_fd752a85d2a593 15-18
+internal/ui/chat/assistant.go
+  s_598f925f78ed2e::t_3569d277be542a 590-592
+  s_598f925f78ed2e::t_0db60709075748 570-574
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "ef6dd05f9f733a25a4085ec07287cf876909ed63",
+  "prompts": {},
+  "sessions": {
+    "s_598f925f78ed2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb148780-c568-4261-9224-2180b75327ec",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}

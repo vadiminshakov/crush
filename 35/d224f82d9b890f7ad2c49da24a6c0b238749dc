@@ -1,0 +1,42 @@
+internal/message/content.go
+  s_69d446ed422c11::t_f98d9967f7824c 72-73,301
+internal/workspace/client_workspace.go
+  s_69d446ed422c11::t_f98d9967f7824c 1302
+internal/proto/message.go
+  s_69d446ed422c11::t_f98d9967f7824c 107,335
+  s_69d446ed422c11::t_c83be2ac83133f 106
+internal/server/events.go
+  s_69d446ed422c11::t_f98d9967f7824c 287
+internal/agent/agent.go
+  s_69d446ed422c11::t_929eac6cbc21d2 86-97,1519
+internal/agent/coordinator.go
+  s_69d446ed422c11::t_359af42ea0a24d 355-363,365-369
+internal/backend/agent.go
+  s_69d446ed422c11::t_7147b94dda1319 11,93-95
+internal/client/proto.go
+  s_69d446ed422c11::t_075d83a5a554cd 509-513
+internal/client/proto_test.go
+  s_69d446ed422c11::t_d7a01727f99254 12,212-231
+internal/message/hidden.go
+  s_69d446ed422c11::t_97660bb5063fa9 1-16
+internal/proto/proto.go
+  s_69d446ed422c11::t_67aa0b449a8d96 145-149
+internal/ui/chat/messages.go
+  s_69d446ed422c11::t_cf949eb484f08d 429-431
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "35d224f82d9b890f7ad2c49da24a6c0b238749dc",
+  "prompts": {},
+  "sessions": {
+    "s_69d446ed422c11": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cf6-aa1a-7051-b1b1-edfbb47e5a10",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}

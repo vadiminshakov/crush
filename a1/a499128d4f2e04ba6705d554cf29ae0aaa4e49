@@ -1,0 +1,28 @@
+internal/agent/templates/plan.md.tpl
+  s_ea42ba931733ba::t_aecf68dd59b1a4 29
+  s_69d446ed422c11::t_0974a7ca4e5ba6 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "a1a499128d4f2e04ba6705d554cf29ae0aaa4e49",
+  "prompts": {},
+  "sessions": {
+    "s_69d446ed422c11": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cf6-aa1a-7051-b1b1-edfbb47e5a10",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_ea42ba931733ba": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "3cec2ee0-8632-43a3-8cde-3544e960a239",
+        "model": "grok-4.6"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}

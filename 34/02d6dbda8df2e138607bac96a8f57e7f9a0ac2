@@ -1,0 +1,21 @@
+internal/ui/model/workspace_cache.go
+  s_fd0fe4032e2dd0::t_1c474bfea38829 317-319
+internal/ui/model/ui.go
+  s_fd0fe4032e2dd0::t_1c474bfea38829 233-236,4156,4163-4165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "3402d6dbda8df2e138607bac96a8f57e7f9a0ac2",
+  "prompts": {},
+  "sessions": {
+    "s_fd0fe4032e2dd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c0949228-2db6-4fce-bbea-f2fdf4f3942d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
