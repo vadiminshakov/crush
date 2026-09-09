@@ -4235,13 +4235,12 @@ func (m *UI) toggleInputMode() tea.Cmd {
 		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
 	}
 	if m.mode == uiInputModePlan {
+		// Second step of the Shift+Tab cycle: plan -> YOLO. Enabling YOLO
+		// here is the only case where the cycle may disable it again.
 		if !m.com.Workspace.PermissionSkipRequests() {
 			m.toggleYoloMode()
 			m.cycleYolo = true
-			return util.ReportInfo("input mode: plan + yolo")
 		}
-		// Leave YOLO enabled while switching back to the coder. This is
-		// the third step in the Shift+Tab cycle: plan + YOLO -> YOLO.
 		return m.setInputMode(uiInputModeCode)
 	}
 	// Only the cycle may turn YOLO back off: YOLO the user enabled himself
@@ -4261,8 +4260,19 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 		agentID = config.AgentCoder
 	}
 
+	// YOLO is orthogonal to the input mode, so report it alongside the mode
+	// instead of labeling a YOLO-enabled coder as plain "code".
+	yolo := m.com.Workspace.PermissionSkipRequests()
+	if yolo {
+		if target == uiInputModeCode {
+			label = "yolo"
+		} else {
+			label += " + yolo"
+		}
+	}
+
 	m.mode = target
-	m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests())
+	m.setEditorPrompt(yolo)
 
 	if err := m.com.Workspace.AgentSetMain(agentID); err != nil {
 		return util.ReportError(err)
