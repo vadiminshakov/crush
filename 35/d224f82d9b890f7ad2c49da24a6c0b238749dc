@@ -11,6 +11,7 @@ internal/agent/agent.go
   s_69d446ed422c11::t_929eac6cbc21d2 86-97,1519
 internal/agent/coordinator.go
   s_69d446ed422c11::t_359af42ea0a24d 355-363,365-369
+  s_370f38c331bf71::t_5b79f2f068cedc 364
 internal/backend/agent.go
   s_69d446ed422c11::t_7147b94dda1319 11,93-95
 internal/client/proto.go
@@ -30,6 +31,14 @@ internal/ui/chat/messages.go
   "base_commit_sha": "35d224f82d9b890f7ad2c49da24a6c0b238749dc",
   "prompts": {},
   "sessions": {
+    "s_370f38c331bf71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1accc07-631d-4ef9-bf6e-aa11f2a65714",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
     "s_69d446ed422c11": {
       "agent_id": {
         "tool": "codex",
