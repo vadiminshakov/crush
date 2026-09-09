@@ -564,9 +564,11 @@ func (a *AssistantMessageItem) renderPlanCard(text string, width int) string {
 	return renderPlanBox(box, rendered, width)
 }
 
-// renderPlanBox applies the card layout, then composes its background onto
-// every parsed cell so nested Markdown resets cannot expose the terminal
-// background. Foregrounds, text attributes, and hyperlinks remain unchanged.
+// renderPlanBox applies the card layout, then fills in the card background on
+// every parsed cell that does not carry one of its own, so nested Markdown
+// resets cannot expose the terminal background. Cells that DO carry a
+// background keep it — that is how inline code keeps its chip inside the card.
+// Foregrounds, text attributes, and hyperlinks remain unchanged.
 func renderPlanBox(style lipgloss.Style, content string, width int) string {
 	style, innerWidth := planBoxLayout(style, width)
 	lines := strings.Split(strings.TrimSpace(content), "\n")
@@ -582,7 +584,9 @@ func renderPlanBox(style lipgloss.Style, content string, width int) string {
 	background := style.GetBackground()
 	for y := range scr.Lines {
 		for x := range scr.Lines[y] {
-			scr.Lines[y][x].Style.Bg = background
+			if scr.Lines[y][x].Style.Bg == nil {
+				scr.Lines[y][x].Style.Bg = background
+			}
 		}
 	}
 	return scr.Render()

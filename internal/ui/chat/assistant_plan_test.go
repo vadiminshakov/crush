@@ -12,7 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAssistantMessageItem_PlanCardHasUniformBackground(t *testing.T) {
+// The plan card must leave no cell unpainted (an unset background exposes the
+// terminal behind the card), while intentional backgrounds — the inline-code
+// chip above all — survive the composition.
+func TestAssistantMessageItem_PlanCardFillsBackground(t *testing.T) {
 	t.Parallel()
 
 	sty := styles.CharmtonePantera()
@@ -38,14 +41,20 @@ func TestAssistantMessageItem_PlanCardHasUniformBackground(t *testing.T) {
 	scr := renderANSIToScreen(first)
 
 	wantBackground := sty.Messages.PlanBox.GetBackground()
-	var foundBold, foundItalic, foundLink, foundEmoji bool
+	require.NotNil(t, sty.PlanMarkdown.Code.BackgroundColor, "inline code must declare a chip background")
+	codeBackground := lipgloss.Color(*sty.PlanMarkdown.Code.BackgroundColor)
+	var foundBold, foundItalic, foundLink, foundEmoji, foundCodeChip bool
 	for y, line := range scr.Lines {
 		for x, cell := range line {
 			if cell.Width == 0 {
 				continue
 			}
-			requireColorEqual(t, wantBackground, cell.Style.Bg,
-				fmt.Sprintf("plan-card cell %q at (%d,%d) must share the card background", cell.Content, x, y))
+			isCodeChip := colorsEqual(codeBackground, cell.Style.Bg)
+			if !isCodeChip {
+				requireColorEqual(t, wantBackground, cell.Style.Bg,
+					fmt.Sprintf("plan-card cell %q at (%d,%d) must carry the card background or an intentional one", cell.Content, x, y))
+			}
+			foundCodeChip = foundCodeChip || isCodeChip
 			foundBold = foundBold || cell.Content == "b" && cell.Style.Attrs&uv.AttrBold != 0
 			foundItalic = foundItalic || cell.Content == "i" && cell.Style.Attrs&uv.AttrItalic != 0
 			foundLink = foundLink || cell.Link.URL == "https://example.com"
@@ -53,6 +62,7 @@ func TestAssistantMessageItem_PlanCardHasUniformBackground(t *testing.T) {
 		}
 	}
 
+	require.True(t, foundCodeChip, "inline code must keep its chip background inside the plan card")
 	require.True(t, foundBold, "bold Markdown styling must survive background composition")
 	require.True(t, foundItalic, "italic Markdown styling must survive background composition")
 	require.True(t, foundLink, "Markdown hyperlinks must survive background composition")
