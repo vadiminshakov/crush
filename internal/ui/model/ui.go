@@ -214,6 +214,15 @@ type UI struct {
 	focus uiFocusState
 	state uiState
 
+	// Frame memoization (see framecache.go). scrollOnlyUpdate is set by
+	// handlers that change nothing but the chat scroll position; frameDirty
+	// overrides it when a layout change happens in the same update.
+	frames           *frameCache
+	scrollOnlyUpdate bool
+	frameDirty       bool
+	frameSkipPut     bool
+	frameGCArmed     bool
+
 	keyMap KeyMap
 	keyenh tea.KeyboardEnhancementsMsg
 
@@ -465,6 +474,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		completions:         comp,
 		attachments:         attachments,
 		todoSpinner:         todoSpinner,
+		frames:              newFrameCache(frameCacheTTL, frameCacheMaxEntries),
 		lspStates:           make(map[string]workspace.LSPClientInfo),
 		mcpStates:           make(map[string]mcp.ClientInfo),
 		notifyBackend:       notification.NoopBackend{},
@@ -696,6 +706,23 @@ func (m *UI) loadCustomCommands() tea.Cmd {
 	}
 }
 
+// applyChatScroll scrolls the chat by lines and, if the selection is then
+// outside the viewport, moves it to the nearest visible edge. The selection
+// is moved rather than scrolled to so a large coalesced delta is applied in
+// full instead of being rewound to the selected item.
+func (m *UI) applyChatScroll(lines int) tea.Cmd {
+	cmd := m.chat.ScrollByAndAnimate(lines)
+	if m.chat.SelectedItemInView() {
+		return cmd
+	}
+	if lines > 0 && m.chat.AtBottom() {
+		m.chat.SelectLast()
+		return cmd
+	}
+	m.chat.SelectNearestInView(lines < 0)
+	return cmd
+}
+
 // loadMCPrompts loads the MCP prompts asynchronously.
 func (m *UI) loadMCPrompts() tea.Msg {
 	prompts, err := m.com.Workspace.ListMCPPrompts(context.Background())
@@ -712,6 +739,7 @@ func (m *UI) loadMCPrompts() tea.Msg {
 // Update handles updates to the UI model.
 func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	m.beginFrameUpdate()
 	// Update terminal capabilities
 	m.caps.Update(msg)
 	switch msg := msg.(type) {
@@ -1228,22 +1256,13 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if lines == 0 {
 				break
 			}
-			if cmd := m.chat.ScrollByAndAnimate(lines); cmd != nil {
+			m.markScrollOnly()
+			if cmd := m.applyChatScroll(lines); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
-			if !m.chat.SelectedItemInView() {
-				if lines < 0 {
-					m.chat.SelectPrev()
-				} else if m.chat.AtBottom() {
-					m.chat.SelectLast()
-				} else {
-					m.chat.SelectNext()
-				}
-				if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			}
 		}
+	case frameGCMsg:
+		m.handleFrameGC()
 	case anim.StepMsg:
 		if m.state == uiChat {
 			if cmd := m.chat.Animate(msg); cmd != nil {
@@ -1421,6 +1440,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// This logic gets triggered on any message type, but should it?
+	prevPlaceholder := m.textarea.Placeholder
 	switch m.focus {
 	case uiFocusMain:
 	case uiFocusEditor:
@@ -1436,6 +1456,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Placeholder = "Yolo mode!"
 		}
 	}
+	if m.textarea.Placeholder != prevPlaceholder {
+		m.invalidateFrames()
+	}
 
 	// TTL backstop: schedule an off-thread re-probe for any memoized
 	// workspace state that has gone stale. Never does IO on this
@@ -1444,7 +1467,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// at this point this can only handle [message.Attachment] message, and we
 	// should return all cmds anyway.
-	_ = m.attachments.Update(msg)
+	if m.attachments.Update(msg) {
+		m.invalidateFrames()
+	}
+	if cmd := m.endFrameUpdate(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	return m, tea.Batch(cmds...)
 }
 
@@ -2857,6 +2885,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			case key.Matches(msg, m.keyMap.Chat.Expand):
 				m.chat.ToggleExpandedSelectedItem()
 			case key.Matches(msg, m.keyMap.Chat.Up):
+				m.markScrollOnly()
 				if cmd := m.chat.ScrollByAndAnimate(-1); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -2867,6 +2896,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					}
 				}
 			case key.Matches(msg, m.keyMap.Chat.Down):
+				m.markScrollOnly()
 				if cmd := m.chat.ScrollByAndAnimate(1); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -2887,21 +2917,25 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 			case key.Matches(msg, m.keyMap.Chat.HalfPageUp):
+				m.markScrollOnly()
 				if cmd := m.chat.ScrollByAndAnimate(-m.chat.Height() / 2); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 				m.chat.SelectFirstInView()
 			case key.Matches(msg, m.keyMap.Chat.HalfPageDown):
+				m.markScrollOnly()
 				if cmd := m.chat.ScrollByAndAnimate(m.chat.Height() / 2); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 				m.chat.SelectLastInView()
 			case key.Matches(msg, m.keyMap.Chat.PageUp):
+				m.markScrollOnly()
 				if cmd := m.chat.ScrollByAndAnimate(-m.chat.Height()); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 				m.chat.SelectFirstInView()
 			case key.Matches(msg, m.keyMap.Chat.PageDown):
+				m.markScrollOnly()
 				if cmd := m.chat.ScrollByAndAnimate(m.chat.Height()); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -3175,6 +3209,16 @@ func (m *UI) View() tea.View {
 	v.ReportFocus = m.caps.ReportFocusEvents
 	v.WindowTitle = "crush " + home.Short(m.com.Workspace.WorkingDir())
 
+	key, cacheable := m.currentFrameKey()
+	if cacheable {
+		if content, cursor, ok := m.frames.get(key); ok {
+			v.Content = content
+			v.Cursor = cursor
+			m.applyProgressBar(&v)
+			return v
+		}
+	}
+
 	canvas := uv.NewScreenBuffer(m.width, m.height)
 	v.Cursor = m.Draw(canvas, canvas.Bounds())
 
@@ -3188,13 +3232,22 @@ func (m *UI) View() tea.View {
 	content = strings.Join(contentLines, "\n")
 
 	v.Content = content
+	if cacheable {
+		m.storeFrame(key, content, v.Cursor)
+	}
+	m.applyProgressBar(&v)
+
+	return v
+}
+
+// applyProgressBar attaches the terminal progress bar while the agent is
+// busy. Kept outside the frame cache so the randomized value stays fresh.
+func (m *UI) applyProgressBar(v *tea.View) {
 	if m.progressBarEnabled && m.sendProgressBar && m.isAgentBusy() {
 		// HACK: use a random percentage to prevent ghostty from hiding it
 		// after a timeout.
 		v.ProgressBar = tea.NewProgressBar(tea.ProgressBarIndeterminate, rand.Intn(100))
 	}
-
-	return v
 }
 
 // ShortHelp implements [help.KeyMap].
@@ -3600,6 +3653,8 @@ func (m *UI) updateTextareaWithPrevHeight(msg tea.Msg, prevHeight int) tea.Cmd {
 
 // updateSize updates the sizes of UI components based on the current layout.
 func (m *UI) updateSize() {
+	m.invalidateFrames()
+
 	// Set status width
 	m.status.SetWidth(m.layout.status.Dx())
 
