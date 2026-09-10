@@ -395,7 +395,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	planMD.H3.Prefix = "  "
 	planMD.H4.Prefix = "    "
 	planMD.H5.Prefix = "      "
-	planMD.Code.Color = hex(o.secondary)
+	planMD.Code.Color = hex(o.destructive)
 	planMD.Code.Bold = new(true)
 	// The card is painted in bgLeastVisible; the default inline-code chip
 	// (bgLessVisible) is only one step away from it and reads as no chip at
