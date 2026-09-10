@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"image"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,6 +9,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/styles"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,4 +78,68 @@ func TestAuthMethodClose(t *testing.T) {
 	action := m.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEscape})
 	_, ok := action.(ActionClose)
 	require.True(t, ok)
+}
+
+func TestAuthMethodVimKeysToggle(t *testing.T) {
+	t.Parallel()
+
+	m := newTestAuthMethod()
+	m.HandleMsg(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	action := m.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	selected, ok := action.(ActionSelectAuthMethod)
+	require.True(t, ok)
+	require.False(t, selected.UseOAuth)
+
+	m = newTestAuthMethod()
+	m.HandleMsg(tea.KeyPressMsg{Code: 'h', Text: "h"})
+	action = m.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	selected, ok = action.(ActionSelectAuthMethod)
+	require.True(t, ok)
+	require.False(t, selected.UseOAuth)
+}
+
+func TestAuthMethodMouseClickFocusesCard(t *testing.T) {
+	t.Parallel()
+
+	m := newTestAuthMethod()
+	scr := uv.NewScreenBuffer(100, 30)
+	m.Draw(scr, image.Rect(0, 0, 100, 30))
+	require.False(t, m.oauthCardArea.Empty())
+	require.False(t, m.apiKeyCardArea.Empty())
+
+	action := m.HandleMsg(tea.MouseClickMsg(tea.Mouse{
+		X:      m.apiKeyCardArea.Min.X + 1,
+		Y:      m.apiKeyCardArea.Min.Y + 1,
+		Button: tea.MouseLeft,
+	}))
+	require.Nil(t, action)
+	require.Equal(t, 1, m.selected)
+
+	// A click outside the cards changes nothing.
+	action = m.HandleMsg(tea.MouseClickMsg(tea.Mouse{
+		X:      0,
+		Y:      0,
+		Button: tea.MouseLeft,
+	}))
+	require.Nil(t, action)
+	require.Equal(t, 1, m.selected)
+}
+
+func TestAuthMethodMouseDoubleClickConfirms(t *testing.T) {
+	t.Parallel()
+
+	m := newTestAuthMethod()
+	scr := uv.NewScreenBuffer(100, 30)
+	m.Draw(scr, image.Rect(0, 0, 100, 30))
+
+	click := tea.MouseClickMsg(tea.Mouse{
+		X:      m.apiKeyCardArea.Min.X + 1,
+		Y:      m.apiKeyCardArea.Min.Y + 1,
+		Button: tea.MouseLeft,
+	})
+	require.Nil(t, m.HandleMsg(click))
+	action := m.HandleMsg(click)
+	selected, ok := action.(ActionSelectAuthMethod)
+	require.True(t, ok)
+	require.False(t, selected.UseOAuth)
 }
