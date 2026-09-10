@@ -538,6 +538,51 @@ func (m *Chat) Blur() {
 	m.list.Blur()
 }
 
+// ScrollPosition returns the list's first visible item index and the line
+// offset into it.
+func (m *Chat) ScrollPosition() (offsetIdx, offsetLine int) {
+	return m.list.ScrollPosition()
+}
+
+// Selected returns the index of the selected item.
+func (m *Chat) Selected() int {
+	return m.list.Selected()
+}
+
+// Focused returns whether the chat list is focused.
+func (m *Chat) Focused() bool {
+	return m.list.Focused()
+}
+
+// RenderState captures everything about the chat that affects its rendered
+// output and is not carried by item versions. Anything added to Chat that
+// Draw reads belongs here, so callers that memoize whole frames stay correct
+// without knowing Chat's internals.
+type RenderState struct {
+	OffsetIdx        int
+	OffsetLine       int
+	Selected         int
+	Focused          bool
+	ScrollbarVisible bool
+	// ItemsVersion changes when any message mutates its rendered output.
+	ItemsVersion uint64
+}
+
+// RenderState returns the current render-affecting chat state. It renders
+// nothing; the only non-constant part is the item version fold, which reads
+// one field per message.
+func (m *Chat) RenderState() RenderState {
+	offsetIdx, offsetLine := m.ScrollPosition()
+	return RenderState{
+		OffsetIdx:        offsetIdx,
+		OffsetLine:       offsetLine,
+		Selected:         m.Selected(),
+		Focused:          m.Focused(),
+		ScrollbarVisible: m.scrollbarVisible,
+		ItemsVersion:     m.list.ItemsVersion(),
+	}
+}
+
 // AtBottom returns whether the chat list is currently scrolled to the bottom.
 func (m *Chat) AtBottom() bool {
 	return m.list.AtBottom()
