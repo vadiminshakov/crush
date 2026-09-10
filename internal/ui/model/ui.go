@@ -706,6 +706,23 @@ func (m *UI) loadCustomCommands() tea.Cmd {
 	}
 }
 
+// applyChatScroll scrolls the chat by lines and, if the selection is then
+// outside the viewport, moves it to the nearest visible edge. The selection
+// is moved rather than scrolled to so a large coalesced delta is applied in
+// full instead of being rewound to the selected item.
+func (m *UI) applyChatScroll(lines int) tea.Cmd {
+	cmd := m.chat.ScrollByAndAnimate(lines)
+	if m.chat.SelectedItemInView() {
+		return cmd
+	}
+	if lines > 0 && m.chat.AtBottom() {
+		m.chat.SelectLast()
+		return cmd
+	}
+	m.chat.SelectNearestInView(lines < 0)
+	return cmd
+}
+
 // loadMCPrompts loads the MCP prompts asynchronously.
 func (m *UI) loadMCPrompts() tea.Msg {
 	prompts, err := m.com.Workspace.ListMCPPrompts(context.Background())
@@ -1240,20 +1257,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			m.markScrollOnly()
-			if cmd := m.chat.ScrollByAndAnimate(lines); cmd != nil {
+			if cmd := m.applyChatScroll(lines); cmd != nil {
 				cmds = append(cmds, cmd)
-			}
-			if !m.chat.SelectedItemInView() {
-				if lines < 0 {
-					m.chat.SelectPrev()
-				} else if m.chat.AtBottom() {
-					m.chat.SelectLast()
-				} else {
-					m.chat.SelectNext()
-				}
-				if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
-					cmds = append(cmds, cmd)
-				}
 			}
 		}
 	case frameGCMsg:

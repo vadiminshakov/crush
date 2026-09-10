@@ -544,6 +544,11 @@ func (m *Chat) ScrollPosition() (offsetIdx, offsetLine int) {
 	return m.list.ScrollPosition()
 }
 
+// Offset returns the scroll offset in lines from the top of the list.
+func (m *Chat) Offset() int {
+	return m.list.Offset()
+}
+
 // Selected returns the index of the selected item.
 func (m *Chat) Selected() int {
 	return m.list.Selected()
@@ -810,6 +815,28 @@ func (m *Chat) SelectLastInView() {
 			m.list.SetSelected(i)
 			return
 		}
+	}
+}
+
+// SelectNearestInView moves an out-of-view selection to the visible edge
+// nearest to it: the top row when the selection is above the viewport, the
+// bottom row when it is below. With no selection, scrolledUp picks the
+// bottom row (the content the user is moving towards) and otherwise the
+// top row.
+func (m *Chat) SelectNearestInView(scrolledUp bool) {
+	startIdx, _ := m.list.VisibleItemIndices()
+	sel := m.list.Selected()
+	switch {
+	case sel < 0:
+		if scrolledUp {
+			m.SelectLastInView()
+		} else {
+			m.SelectFirstInView()
+		}
+	case sel < startIdx:
+		m.SelectFirstInView()
+	default:
+		m.SelectLastInView()
 	}
 }
 
