@@ -782,8 +782,6 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Editor.PromptPlanIconBlurred = s.Editor.PromptPlanIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
 	s.Editor.PromptPlanDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.primary).SetString(":::")
 	s.Editor.PromptPlanDotsBlurred = s.Editor.PromptPlanDotsFocused.Foreground(o.fgMoreSubtle)
-	s.Editor.PromptPlanYoloIconFocused = s.Editor.PromptPlanIconFocused.Foreground(o.bgBase).Background(o.warning)
-	s.Editor.PromptPlanYoloIconBlurred = s.Editor.PromptPlanYoloIconFocused.Faint(true)
 	s.Editor.PromptYoloIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.fgMostSubtle).Background(o.busy).Bold(true).SetString(" Y ")
 	s.Editor.PromptYoloIconBlurred = s.Editor.PromptYoloIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
 	s.Editor.PromptYoloDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.warningSubtle).SetString(":::")

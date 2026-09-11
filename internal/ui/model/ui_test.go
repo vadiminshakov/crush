@@ -634,7 +634,7 @@ func TestPlanHandoffExplicitPermissionMode(t *testing.T) {
 	}
 }
 
-func TestPlanPromptTakesPrecedenceOverYOLO(t *testing.T) {
+func TestPlanPromptIgnoresYOLO(t *testing.T) {
 	t.Parallel()
 	u, _ := newPlanUI(t, "sess-1")
 	u.textarea.SetWidth(40)
@@ -660,22 +660,6 @@ func TestGeneratedPlanContinuationIsHidden(t *testing.T) {
 	require.Equal(t, []string{"Implement the plan.", "Implement the plan."}, ws.runPrompts)
 }
 
-func TestPlanYOLOBadge(t *testing.T) {
-	t.Parallel()
-	u, _ := newPlanUI(t, "sess-1")
-	for _, focused := range []bool{true, false} {
-		info := textarea.PromptInfo{Focused: focused}
-		normal := u.planPromptFunc(info, false)
-		yolo := u.planPromptFunc(info, true)
-		require.NotEqual(t, normal, yolo)
-		if focused {
-			require.Equal(t, u.com.Styles.Editor.PromptPlanYoloIconFocused.Render(), yolo)
-		} else {
-			require.Equal(t, u.com.Styles.Editor.PromptPlanYoloIconBlurred.Render(), yolo)
-		}
-	}
-}
-
 func TestToggleInputModePreservesExistingYOLOOnEntry(t *testing.T) {
 	t.Parallel()
 	u, ws := newPlanUI(t, "sess-1")
@@ -684,4 +668,21 @@ func TestToggleInputModePreservesExistingYOLOOnEntry(t *testing.T) {
 	u.toggleInputMode()()
 	require.Equal(t, uiInputModePlan, u.mode)
 	require.True(t, ws.yolo)
+}
+
+func TestSwitchPlanToYolo(t *testing.T) {
+	t.Parallel()
+	for _, carriedYolo := range []bool{false, true} {
+		u, ws := newPlanUI(t, "sess-1")
+		ws.yolo = carriedYolo
+		u.cycleYolo = carriedYolo
+
+		msg := u.switchPlanToYolo()()
+		require.NotNil(t, msg)
+		u.modeSwitching = false
+		require.Equal(t, uiInputModeCode, u.mode, "activating YOLO leaves plan mode")
+		require.True(t, ws.yolo, "YOLO ends up enabled regardless of the carried state")
+		require.False(t, u.cycleYolo, "explicit activation must not be undone by the Shift+Tab cycle")
+		require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
+	}
 }
