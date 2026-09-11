@@ -177,10 +177,10 @@ func (m *AuthMethod) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	prompt := t.Dialog.AuthMethod.Prompt.Width(innerWidth).Render("How would you like to authenticate?")
 	if !m.isOnboarding {
-		// Keep a single blank line under the title; the prompt, cards, and
-		// help bar sit tight against each other.
+		// Keep a single blank line under the title.
 		prompt = "\n" + prompt
 	}
+	prompt += "\n"
 	rc.AddPart(prompt)
 
 	cardWidth := max(0, (innerWidth-authMethodCardGap-2*authMethodCardMargin)/2)
@@ -200,7 +200,7 @@ func (m *AuthMethod) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 	rc.AddPart(cards)
 
-	rc.Help = renderDialogHelp(t, &m.help, m, innerWidth)
+	rc.Help = "\n" + renderDialogHelp(t, &m.help, m, innerWidth)
 
 	view := rc.Render()
 	if m.isOnboarding {
