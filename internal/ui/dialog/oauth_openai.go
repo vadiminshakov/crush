@@ -33,7 +33,7 @@ type OAuthOpenAI struct {
 var _ OAuthProvider = (*OAuthOpenAI)(nil)
 
 func (m *OAuthOpenAI) name() string {
-	return "OpenAI (ChatGPT)"
+	return "ChatGPT"
 }
 
 func (m *OAuthOpenAI) initiateAuth() tea.Msg {
