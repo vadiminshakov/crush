@@ -2040,7 +2040,15 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 	// Command dialog messages.
 	case dialog.ActionToggleYoloMode:
-		m.toggleYoloMode()
+		if m.mode == uiInputModePlan {
+			// Same as Ctrl+Y in plan mode: YOLO only exists as YOLO
+			// coding, so activating it leaves plan mode.
+			if cmd := m.switchPlanToYolo(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		} else {
+			m.toggleYoloMode()
+		}
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
@@ -2688,6 +2696,14 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			cmds = append(cmds, tea.Suspend)
 			return true
 		case key.Matches(msg, m.keyMap.ToggleYolo):
+			if m.mode == uiInputModePlan {
+				// YOLO has no meaning while planning; activating it
+				// switches straight to YOLO coding.
+				if cmd := m.switchPlanToYolo(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return true
+			}
 			yolo := m.toggleYoloMode()
 			status := "disabled"
 			if yolo {
@@ -4148,9 +4164,7 @@ func (m *UI) setEditorPrompt(yolo bool) {
 		return
 	}
 	if m.mode == uiInputModePlan {
-		m.textarea.SetPromptFunc(4, func(info textarea.PromptInfo) string {
-			return m.planPromptFunc(info, yolo)
-		})
+		m.textarea.SetPromptFunc(4, m.planPromptFunc)
 		return
 	}
 	if yolo {
@@ -4177,14 +4191,8 @@ func (m *UI) normalPromptFunc(info textarea.PromptInfo) string {
 }
 
 // planPromptFunc marks planning with a badge beside the editor.
-func (m *UI) planPromptFunc(info textarea.PromptInfo, yolo bool) string {
+func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
 	t := m.com.Styles
-	if info.LineNumber == 0 && yolo {
-		if info.Focused {
-			return t.Editor.PromptPlanYoloIconFocused.Render()
-		}
-		return t.Editor.PromptPlanYoloIconBlurred.Render()
-	}
 	if info.LineNumber == 0 {
 		if info.Focused {
 			return t.Editor.PromptPlanIconFocused.Render()
@@ -4252,6 +4260,24 @@ func (m *UI) toggleInputMode() tea.Cmd {
 	return m.setInputMode(uiInputModePlan)
 }
 
+// switchPlanToYolo handles activating YOLO while in plan mode: YOLO is a
+// coding concern, so instead of a "plan + yolo" state the UI switches
+// straight to the coder with YOLO enabled. Activation is idempotent — YOLO
+// carried into plan mode stays on, and the user ends up in full YOLO mode
+// either way.
+func (m *UI) switchPlanToYolo() tea.Cmd {
+	if m.isAgentBusy() || m.modeSwitching {
+		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
+	}
+	if !m.com.Workspace.PermissionSkipRequests() {
+		m.toggleYoloMode()
+	}
+	// Explicit activation pins YOLO: the Shift+Tab cycle must not disable
+	// it on the next pass.
+	m.cycleYolo = false
+	return m.setInputMode(uiInputModeCode)
+}
+
 func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 	label := "plan"
 	agentID := config.AgentPlan
@@ -4263,12 +4289,8 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 	// YOLO is orthogonal to the input mode, so report it alongside the mode
 	// instead of labeling a YOLO-enabled coder as plain "code".
 	yolo := m.com.Workspace.PermissionSkipRequests()
-	if yolo {
-		if target == uiInputModeCode {
-			label = "yolo"
-		} else {
-			label += " + yolo"
-		}
+	if yolo && target == uiInputModeCode {
+		label = "yolo"
 	}
 
 	m.mode = target

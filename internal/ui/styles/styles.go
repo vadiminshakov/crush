@@ -153,13 +153,11 @@ type Styles struct {
 		PromptNormalFocused lipgloss.Style
 		PromptNormalBlurred lipgloss.Style
 
-		// Plan mode prompt, with a warning badge when YOLO is active.
-		PromptPlanIconFocused     lipgloss.Style
-		PromptPlanIconBlurred     lipgloss.Style
-		PromptPlanDotsFocused     lipgloss.Style
-		PromptPlanDotsBlurred     lipgloss.Style
-		PromptPlanYoloIconFocused lipgloss.Style
-		PromptPlanYoloIconBlurred lipgloss.Style
+		// Plan mode prompt.
+		PromptPlanIconFocused lipgloss.Style
+		PromptPlanIconBlurred lipgloss.Style
+		PromptPlanDotsFocused lipgloss.Style
+		PromptPlanDotsBlurred lipgloss.Style
 
 		// YOLO mode prompt.
 		PromptYoloIconFocused lipgloss.Style
