@@ -127,7 +127,7 @@ func (f *BrowserFlow) Close() {
 // URL in a self-closable tab.
 func (f *BrowserFlow) handleStart(w http.ResponseWriter, _ *http.Request) {
 	_ = callback.Serve(w, callback.Result{
-		Subject:     "OpenAI (ChatGPT)",
+		Subject:     "OpenAI",
 		ContinueURL: f.authURL,
 	})
 }
@@ -137,7 +137,7 @@ func (f *BrowserFlow) handleStart(w http.ResponseWriter, _ *http.Request) {
 func (f *BrowserFlow) handleCallback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	result := callback.Result{
-		Subject:          "OpenAI (ChatGPT)",
+		Subject:          "OpenAI",
 		ErrorCode:        query.Get("error"),
 		ErrorDescription: query.Get("error_description"),
 	}

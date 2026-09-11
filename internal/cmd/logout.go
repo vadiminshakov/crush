@@ -162,7 +162,7 @@ func pickLoggedInProvider(c *client.Client, wsID string) (string, error) {
 	oauthProviders := map[string]string{
 		"hyper":   "Hyper",
 		"copilot": "GitHub Copilot",
-		"openai":  "OpenAI (ChatGPT)",
+		"openai":  "OpenAI",
 	}
 
 	var loggedIn []loggedInProvider

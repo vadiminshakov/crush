@@ -133,14 +133,14 @@ func TestWrite_ContinueHandoff(t *testing.T) {
 
 	var b strings.Builder
 	require.NoError(t, Write(&b, Result{
-		Subject:     "OpenAI (ChatGPT)",
+		Subject:     "OpenAI",
 		ContinueURL: "https://auth.openai.com/oauth/authorize?client_id=x",
 	}))
 	page := b.String()
 
 	require.Contains(t, page, `class="card continue"`)
 	require.Contains(t, page, "One more click")
-	require.Contains(t, page, "OpenAI (ChatGPT)")
+	require.Contains(t, page, "OpenAI")
 	require.Contains(t, page, `id="continue"`)
 	require.Contains(t, page, `href="https://auth.openai.com/oauth/authorize?client_id=x"`)
 	require.Contains(t, page, `target="_blank"`)
