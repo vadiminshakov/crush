@@ -1,0 +1,31 @@
+internal/ui/model/ui_test.go
+  s_7107ca797325cd::t_df4fdecb9be842 5,16-17,23,344,355,358,373-482
+  s_7107ca797325cd::t_cc57512eb75191 224-227,229,234
+internal/ui/dialog/plan_handoff_inline.go
+  s_7107ca797325cd::t_df4fdecb9be842 6,13,16,22,24-36,44-45,51,57-80,91-93,102-105,112,123,130-136,142-143,157,161,164,176,178,201,204,208-246,254-255,258-259,270,277,279-296,298,314-345,360,367,376,384,387,394-542,548
+internal/ui/dialog/question_form.go
+  s_7107ca797325cd::t_df4fdecb9be842 67-68,370-377
+internal/ui/model/ui.go
+  s_7107ca797325cd::t_9b5f18ab611749 1213,1216,1219,1222
+  s_7107ca797325cd::t_df4fdecb9be842 783-784,1114-1117,1184-1187,1211-1212,1214-1215,1217-1218,1220-1221,1223,1241-1251,1253,1765,1767,1769,1773-1779,1785-1812,2716,2718,3204-3205,3230-3231,3402-3410,3499-3516,3687-3698,3739-3743,3748-3752,3852-3854,3883-3884,4992-5002,5090
+internal/ui/dialog/plan_handoff_inline_test.go
+  s_7107ca797325cd::t_df4fdecb9be842 5-6,13,22,35,38,56-147,171,176-179,198,214-264,296-304
+internal/ui/dialog/inline_editor.go
+  s_7107ca797325cd::t_df4fdecb9be842 41-73,97-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "66803d754502d1a0643681e1daf2c34b64c40815",
+  "prompts": {},
+  "sessions": {
+    "s_7107ca797325cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33142454-6277-4f45-80eb-dd79c92578b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
