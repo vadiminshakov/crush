@@ -1,0 +1,19 @@
+internal/ui/model/ui.go
+  s_7107ca797325cd::t_ad9284a0113baf 4081-4083
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "685f030228f0e3dc10b84183c3e7b0a1b117a914",
+  "prompts": {},
+  "sessions": {
+    "s_7107ca797325cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33142454-6277-4f45-80eb-dd79c92578b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
