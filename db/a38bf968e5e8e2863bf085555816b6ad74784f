@@ -1,0 +1,27 @@
+internal/ui/styles/quickstyle.go
+  s_7107ca797325cd::t_8169348002783c 1030
+internal/ui/model/ui.go
+  s_7107ca797325cd::t_8169348002783c 520,1952,4081
+internal/ui/styles/styles.go
+  s_7107ca797325cd::t_8169348002783c 572-573
+internal/ui/model/status.go
+  s_7107ca797325cd::t_8169348002783c 4,27,50-54,77-85,95-101,125-127,131,141-146
+internal/ui/model/ui_test.go
+  s_7107ca797325cd::t_d192ce19dc0163 166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "dba38bf968e5e8e2863bf085555816b6ad74784f",
+  "prompts": {},
+  "sessions": {
+    "s_7107ca797325cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33142454-6277-4f45-80eb-dd79c92578b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
