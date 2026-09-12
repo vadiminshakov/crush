@@ -1,0 +1,39 @@
+internal/backend/agent.go
+  s_7107ca797325cd::t_51efe63ed79d1f 167-180
+internal/server/proto.go
+  s_7107ca797325cd::t_51efe63ed79d1f 545-563
+internal/server/endpoints.go
+  s_7107ca797325cd::t_d819415c71b70c 328-336
+internal/backend/agent_test.go
+  s_7107ca797325cd::t_51efe63ed79d1f 5,27-29,65-67
+  s_7107ca797325cd::t_bf8a652b0a0d83 68,173-210
+internal/proto/requests.go
+  s_7107ca797325cd::t_51efe63ed79d1f 110-115
+internal/client/proto.go
+  s_7107ca797325cd::t_51efe63ed79d1f 486-499
+internal/server/agent_cancel_test.go
+  s_7107ca797325cd::t_51efe63ed79d1f 39-41,88-90
+  s_7107ca797325cd::t_bf8a652b0a0d83 91
+internal/client/proto_test.go
+  s_7107ca797325cd::t_51efe63ed79d1f 161-192
+internal/server/agent_setmain_test.go
+  s_7107ca797325cd::t_51efe63ed79d1f 1-72
+internal/workspace/client_workspace.go
+  s_7107ca797325cd::t_51efe63ed79d1f 316
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "26564b5979e232521a9a91ac38cc5616c79da5ee",
+  "prompts": {},
+  "sessions": {
+    "s_7107ca797325cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33142454-6277-4f45-80eb-dd79c92578b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
