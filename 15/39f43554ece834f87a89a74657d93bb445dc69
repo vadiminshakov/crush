@@ -1,0 +1,31 @@
+internal/agent/templates/plan.md.tpl
+  s_7107ca797325cd::t_ce7524e27d296d 13-14,24-28,35
+internal/config/load_test.go
+  s_7107ca797325cd::t_ce7524e27d296d 821,847,878
+internal/ui/dialog/actions.go
+  s_7107ca797325cd::t_ce7524e27d296d 101-103
+internal/config/config.go
+  s_7107ca797325cd::t_ce7524e27d296d 974
+internal/ui/model/ui.go
+  s_7107ca797325cd::t_ce7524e27d296d 780-783,2087-2089,4072,4074-4084,4087,4094,4100,4878-4900
+internal/ui/model/ui_test.go
+  s_7107ca797325cd::t_ce7524e27d296d 10,13,15,184-312
+internal/ui/dialog/plan_handoff.go
+  s_7107ca797325cd::t_ce7524e27d296d 1-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1539f43554ece834f87a89a74657d93bb445dc69",
+  "prompts": {},
+  "sessions": {
+    "s_7107ca797325cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33142454-6277-4f45-80eb-dd79c92578b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
