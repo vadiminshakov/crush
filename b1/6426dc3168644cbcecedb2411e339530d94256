@@ -1,0 +1,19 @@
+internal/agent/coordinator_test.go
+  s_370f38c331bf71::t_3de53ae4d3aea5 793
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "b16426dc3168644cbcecedb2411e339530d94256",
+  "prompts": {},
+  "sessions": {
+    "s_370f38c331bf71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1accc07-631d-4ef9-bf6e-aa11f2a65714",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}

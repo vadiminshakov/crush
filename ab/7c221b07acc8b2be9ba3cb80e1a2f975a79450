@@ -1,0 +1,27 @@
+internal/ui/styles/quickstyle.go
+  s_370f38c331bf71::t_7f516a79c328e4 923-925
+internal/ui/common/common.go
+  s_370f38c331bf71::t_7f516a79c328e4 23-38
+internal/ui/chat/assistant.go
+  s_370f38c331bf71::t_7f516a79c328e4 532-537
+internal/ui/model/ui.go
+  s_370f38c331bf71::t_7f516a79c328e4 4903
+internal/ui/styles/styles.go
+  s_370f38c331bf71::t_7f516a79c328e4 325-327
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "ab7c221b07acc8b2be9ba3cb80e1a2f975a79450",
+  "prompts": {},
+  "sessions": {
+    "s_370f38c331bf71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1accc07-631d-4ef9-bf6e-aa11f2a65714",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}

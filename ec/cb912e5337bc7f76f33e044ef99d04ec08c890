@@ -1,0 +1,56 @@
+internal/ui/model/ui_test.go
+  s_69d446ed422c11::t_750f63de49f413 197
+  s_69d446ed422c11::t_f98d9967f7824c 132-133,154-156,173,175,578
+  s_69d446ed422c11::t_b6858a60b3bdab 194-196
+  s_69d446ed422c11::t_5b139b0c004e2b 198-200
+  s_69d446ed422c11::t_848a8cb2ceedd5 188-193,201-205,621-688
+internal/ui/model/ui.go
+  s_69d446ed422c11::t_0974a7ca4e5ba6 901,1500,4140,4146-4151,4175-4194,4235,4237,4579-4583,4635-4639,5113,5123-5126,5137
+  s_69d446ed422c11::t_750f63de49f413 4238-4244
+  s_69d446ed422c11::t_02d2a7e2f5bbdc 899-900
+  s_69d446ed422c11::t_269656549a3838 4195
+  s_69d446ed422c11::t_8cd5b4b8119013 4234
+  s_69d446ed422c11::t_8e11ee8a71abc1 4236
+  s_69d446ed422c11::t_45eb5d52ec8220 5134-5136
+  s_69d446ed422c11::t_7ec7466bccea97 4230,4246,4276-4278,5128-5133
+internal/ui/styles/styles.go
+  s_69d446ed422c11::t_0974a7ca4e5ba6 157-159
+  s_69d446ed422c11::t_5f652abdddbcd2 156,160-164,584
+internal/ui/dialog/plan_handoff_inline.go
+  s_012d668daf4913::t_c5232cd3a66c13 19-26,100-101,169,171,173,176,181,189,200,230-231,237-238,244-245,395-397,400
+  s_69d446ed422c11::t_0974a7ca4e5ba6 33,170,172,236,260
+  s_012d668daf4913::t_0c9b8b8d74bc16 32,34-44,48,51,99,232-235
+internal/ui/styles/quickstyle.go
+  s_69d446ed422c11::t_0974a7ca4e5ba6 398-400,768-771
+  s_69d446ed422c11::t_621239b9d6a1fd 772-773
+internal/ui/dialog/plan_handoff_inline_test.go
+  s_69d446ed422c11::t_10496ee47bf4e8 163,206,284-285,320-360
+internal/ui/model/keys.go
+  s_69d446ed422c11::t_3ca225fffe2164 126
+internal/ui/model/status.go
+  s_69d446ed422c11::t_f752d87e80018a 21-25,105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "eccb912e5337bc7f76f33e044ef99d04ec08c890",
+  "prompts": {},
+  "sessions": {
+    "s_012d668daf4913": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "656948ea-1e5c-4a5e-b7c9-e925b60a775c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_69d446ed422c11": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cf6-aa1a-7051-b1b1-edfbb47e5a10",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
