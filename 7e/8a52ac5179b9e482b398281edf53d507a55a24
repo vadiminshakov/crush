@@ -1,0 +1,22 @@
+internal/agent/tools/mcp/init.go
+  s_6e6cb9748289fc::t_a26ba2b98de863 1374-1375,1377
+internal/agent/tools/mcp/lifecycle_test.go
+  s_6e6cb9748289fc::t_dd889be26397e1 11
+  s_6e6cb9748289fc::t_0ffb6a3883016a 487-494
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "7e8a52ac5179b9e482b398281edf53d507a55a24",
+  "prompts": {},
+  "sessions": {
+    "s_6e6cb9748289fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dd0d089d-2e15-4205-8907-3040e2da0eec",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
