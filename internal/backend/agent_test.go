@@ -27,6 +27,7 @@ type blockingCoordinator struct {
 
 	setMainAgentErr  error
 	lastMainAgentSet atomic.Value
+	busy             bool
 }
 
 func newBlockingCoordinator() *blockingCoordinator {
@@ -53,7 +54,7 @@ func (c *blockingCoordinator) RunAccepted(ctx context.Context, accept *agent.Acc
 func (c *blockingCoordinator) BeginAccepted(sessionID string) *agent.AcceptedRun { return nil }
 func (c *blockingCoordinator) Cancel(string)                                     {}
 func (c *blockingCoordinator) CancelAll()                                        {}
-func (c *blockingCoordinator) IsBusy() bool                                      { return false }
+func (c *blockingCoordinator) IsBusy() bool                                      { return c.busy }
 func (c *blockingCoordinator) IsSessionBusy(string) bool                         { return false }
 func (c *blockingCoordinator) QueuedPrompts(string) int                          { return 0 }
 func (c *blockingCoordinator) QueuedPromptsList(string) []string                 { return nil }
@@ -195,6 +196,18 @@ func TestSetMainAgent_Success(t *testing.T) {
 	err := b.SetMainAgent(ws.ID, "plan")
 	require.NoError(t, err)
 	require.Equal(t, "plan", coord.lastMainAgentSet.Load())
+}
+
+func TestSetMainAgent_RejectedWhileBusy(t *testing.T) {
+	t.Parallel()
+	b, _ := newTestBackend(t)
+	coord := newBlockingCoordinator()
+	coord.busy = true
+	ws := insertAgentWorkspace(t, b, coord)
+
+	err := b.SetMainAgent(ws.ID, "plan")
+	require.ErrorIs(t, err, ErrAgentBusy)
+	require.Nil(t, coord.lastMainAgentSet.Load(), "busy agent must not be switched")
 }
 
 func TestSetMainAgent_PropagatesCoordinatorError(t *testing.T) {

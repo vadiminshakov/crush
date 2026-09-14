@@ -896,14 +896,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modeSwitchedMsg:
 		m.modeSwitching = false
-		if msg.err != nil {
-			cmds = append(cmds, util.ReportError(msg.err))
-			break
-		}
-		if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
-			cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
-		}
-		cmds = append(cmds, util.ReportInfo("input mode: "+msg.label))
+		cmds = append(cmds, m.applyModeSwitch(msg)...)
 
 	case sendMessageMsg:
 		cmds = append(cmds, m.sendMessage(msg.Content, msg.Attachments...))
@@ -4293,26 +4286,46 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 		label = "yolo"
 	}
 
-	m.mode = target
-	m.setEditorPrompt(yolo)
-
-	if err := m.com.Workspace.AgentSetMain(agentID); err != nil {
-		return util.ReportError(err)
-	}
-
+	// The agent switch is an HTTP round-trip in client/server mode, so it
+	// runs off the update loop together with the model update. The mode and
+	// editor prompt only change once the switch succeeds (applyModeSwitch),
+	// so a failed switch never leaves the editor claiming a mode the
+	// server's active agent does not match.
 	m.modeSwitching = true
 	return func() tea.Msg {
+		err := m.com.Workspace.AgentSetMain(agentID)
+		if err == nil {
+			err = m.com.Workspace.UpdateAgentModel(context.Background())
+		}
 		return modeSwitchedMsg{
+			mode:  target,
 			label: label,
-			err:   m.com.Workspace.UpdateAgentModel(context.Background()),
+			err:   err,
 		}
 	}
 }
 
-// modeSwitchedMsg reports that the async agent-model update started by
+// applyModeSwitch finalizes an input-mode switch once the backend has
+// settled. On error the previous mode is kept so the editor never claims a
+// mode the server's active agent does not match.
+func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
+	if msg.err != nil {
+		return []tea.Cmd{util.ReportError(msg.err)}
+	}
+	m.mode = msg.mode
+	m.setEditorPrompt(m.yoloModeCached())
+	var cmds []tea.Cmd
+	if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
+		cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
+	}
+	return append(cmds, util.ReportInfo("input mode: "+msg.label))
+}
+
+// modeSwitchedMsg reports that the async agent switch started by
 // setInputMode has finished (successfully or not).
 type modeSwitchedMsg struct {
 	continueSessionID string
+	mode              uiInputMode
 	label             string
 	err               error
 }
@@ -5143,6 +5156,13 @@ func (m *UI) resetPlanModeState() tea.Cmd {
 		m.textarea.Focus()
 	}
 	if m.mode != uiInputModePlan {
+		return nil
+	}
+	// The backend rejects agent switches while a run is active (409). When
+	// one is, keep the mode as-is: the server's active agent still matches
+	// what the editor shows, and the next Shift+Tab lands back in code mode
+	// once the run finishes.
+	if m.isAgentBusy() {
 		return nil
 	}
 	return m.setInputMode(uiInputModeCode)

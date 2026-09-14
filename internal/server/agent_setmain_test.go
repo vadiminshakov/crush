@@ -49,6 +49,18 @@ func TestPostAgentMain_CoordinatorError(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
+func TestPostAgentMain_BusyConflict(t *testing.T) {
+	t.Parallel()
+
+	coord := newRunCoordinator(func(context.Context) error { return nil })
+	coord.busy = true
+	c, wsID := buildAgentWorkspace(t, coord)
+
+	rec := postAgentMain(t, c, wsID, "plan")
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Nil(t, coord.lastMainAgentSet.Load(), "busy agent must not be switched")
+}
+
 func TestPostAgentMain_WorkspaceNotFound(t *testing.T) {
 	t.Parallel()
 

@@ -971,7 +971,20 @@ func resolveReadOnlyTools(tools []string) []string {
 }
 
 func resolvePlanTools(tools []string) []string {
-	planTools := []string{"agent", "glob", "grep", "ls", "question", "sourcegraph", "view"}
+	// The read-only LSP lookups mirror the task agent's tool set: planning
+	// needs symbol navigation just as much as research does.
+	planTools := []string{
+		"agent",
+		"glob",
+		"grep",
+		"ls",
+		"lsp_call_hierarchy",
+		"lsp_definition",
+		"lsp_symbols",
+		"question",
+		"sourcegraph",
+		"view",
+	}
 	return filterSlice(tools, planTools, true)
 }
 

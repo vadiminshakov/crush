@@ -196,9 +196,7 @@ func TestToggleInputMode(t *testing.T) {
 		{uiInputModeCode, true, 2},
 		{uiInputModeCode, false, 2},
 	} {
-		msg := ui.toggleInputMode()()
-		require.NotNil(t, msg)
-		ui.modeSwitching = false
+		applyModeSwitchMsg(ui, ui.toggleInputMode())
 		require.Equal(t, want.mode, ui.mode)
 		require.Equal(t, want.yolo, ws.yolo)
 		require.Equal(t, want.updates, ws.updateCalls)
@@ -230,6 +228,20 @@ func newPlanUI(t *testing.T, sessionID string) (*UI, *testWorkspace) {
 		chat:     NewChat(com, config.ScrollbarDefault),
 	}
 	return u, ws
+}
+
+// applyModeSwitchMsg runs a setInputMode command to completion the way the
+// real event loop does: execute the async switch, then feed the resulting
+// modeSwitchedMsg through the finalizer. Returns the finalizer's cmds so
+// tests can execute them when they care about the queued work.
+func applyModeSwitchMsg(u *UI, cmd tea.Cmd) []tea.Cmd {
+	t := cmd()
+	switched, ok := t.(modeSwitchedMsg)
+	if !ok {
+		return nil
+	}
+	u.modeSwitching = false
+	return u.applyModeSwitch(switched)
 }
 
 func isPlanHandoffInline(u *UI) bool {
@@ -486,7 +498,7 @@ func TestSetInputMode_SwitchesToCode(t *testing.T) {
 		mode:     uiInputModePlan,
 		textarea: textarea.New(),
 	}
-	u.setInputMode(uiInputModeCode)()
+	applyModeSwitchMsg(u, u.setInputMode(uiInputModeCode))
 	require.Equal(t, uiInputModeCode, u.mode)
 	require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
 }
@@ -500,7 +512,7 @@ func TestSetInputMode_SwitchesToPlan(t *testing.T) {
 		mode:     uiInputModeCode,
 		textarea: textarea.New(),
 	}
-	u.setInputMode(uiInputModePlan)()
+	applyModeSwitchMsg(u, u.setInputMode(uiInputModePlan))
 	require.Equal(t, uiInputModePlan, u.mode)
 	require.Equal(t, config.AgentPlan, ws.setMainCalledWith)
 }
@@ -532,6 +544,7 @@ func TestSetInputMode_TracksModeSwitching(t *testing.T) {
 	msg, ok := cmd().(modeSwitchedMsg)
 	require.True(t, ok)
 	require.NoError(t, msg.err)
+	require.Equal(t, uiInputModeCode, msg.mode)
 	require.Equal(t, "code", msg.label)
 }
 
@@ -576,9 +589,28 @@ func TestPlanHandoffConfirm_ClearsPendingAndSwitchesMode(t *testing.T) {
 
 	cmd := inline.OnConfirm(false)
 	require.NotNil(t, cmd)
+	// The switch is async: the mode only changes once the backend settles.
+	require.Equal(t, uiInputModePlan, u.mode)
+	cmds := applyModeSwitchMsg(u, cmd)
 	require.Equal(t, uiInputModeCode, u.mode)
 	require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
 	require.Empty(t, u.planReadySessionID)
+
+	// The confirmed plan continues with a hidden implement prompt.
+	for _, c := range cmds {
+		if c == nil {
+			continue
+		}
+		if batch, ok := c().(tea.BatchMsg); ok {
+			for _, nested := range batch {
+				if nested != nil {
+					nested()
+				}
+			}
+		}
+	}
+	require.Equal(t, []string{"Implement the plan."}, ws.runPrompts)
+	require.Equal(t, []bool{true}, ws.runHidden)
 }
 
 func TestSendMessage_ClearsPendingPlan(t *testing.T) {
@@ -601,6 +633,7 @@ func TestResetPlanModeState(t *testing.T) {
 
 	cmd := u.resetPlanModeState()
 	require.NotNil(t, cmd)
+	applyModeSwitchMsg(u, cmd)
 	require.Equal(t, uiInputModeCode, u.mode)
 	require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
 	require.Empty(t, u.planReadySessionID)
@@ -665,7 +698,7 @@ func TestToggleInputModePreservesExistingYOLOOnEntry(t *testing.T) {
 	u, ws := newPlanUI(t, "sess-1")
 	u.mode = uiInputModeCode
 	ws.yolo = true
-	u.toggleInputMode()()
+	applyModeSwitchMsg(u, u.toggleInputMode())
 	require.Equal(t, uiInputModePlan, u.mode)
 	require.True(t, ws.yolo)
 }
@@ -677,9 +710,7 @@ func TestSwitchPlanToYolo(t *testing.T) {
 		ws.yolo = carriedYolo
 		u.cycleYolo = carriedYolo
 
-		msg := u.switchPlanToYolo()()
-		require.NotNil(t, msg)
-		u.modeSwitching = false
+		applyModeSwitchMsg(u, u.switchPlanToYolo())
 		require.Equal(t, uiInputModeCode, u.mode, "activating YOLO leaves plan mode")
 		require.True(t, ws.yolo, "YOLO ends up enabled regardless of the carried state")
 		require.False(t, u.cycleYolo, "explicit activation must not be undone by the Shift+Tab cycle")

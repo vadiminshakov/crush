@@ -168,7 +168,10 @@ func (b *Backend) UpdateAgent(ctx context.Context, workspaceID string) error {
 	return ws.UpdateAgentModel(ctx)
 }
 
-// SetMainAgent switches the workspace's active agent (coder or plan).
+// SetMainAgent switches the workspace's active agent (coder or plan). It
+// is rejected while the agent is running so a switch can never strand a
+// run's queued prompts on the previous agent — the same protection the
+// TUI gives itself with its busy check before toggling input mode.
 func (b *Backend) SetMainAgent(workspaceID, agentID string) error {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
@@ -177,6 +180,10 @@ func (b *Backend) SetMainAgent(workspaceID, agentID string) error {
 
 	if ws.AgentCoordinator == nil {
 		return ErrAgentNotInitialized
+	}
+
+	if ws.AgentCoordinator.IsBusy() {
+		return ErrAgentBusy
 	}
 
 	return ws.AgentCoordinator.SetMainAgent(agentID)

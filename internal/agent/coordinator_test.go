@@ -796,8 +796,8 @@ func TestCoordinatorSetMainAgent(t *testing.T) {
 		coder := &mockSessionAgent{}
 		plan := &mockSessionAgent{}
 		coord := &coordinator{
-			currentAgent:     coder,
-			currentAgentName: config.AgentCoder,
+			mainAgent:     coder,
+			mainAgentName: config.AgentCoder,
 			agents: map[string]SessionAgent{
 				config.AgentCoder: coder,
 				config.AgentPlan:  plan,
@@ -806,8 +806,8 @@ func TestCoordinatorSetMainAgent(t *testing.T) {
 
 		err := coord.SetMainAgent(config.AgentPlan)
 		require.NoError(t, err)
-		assert.Equal(t, config.AgentPlan, coord.currentAgentName)
-		assert.Same(t, plan, coord.currentAgent)
+		assert.Equal(t, config.AgentPlan, coord.mainAgentName)
+		assert.Same(t, plan, coord.mainAgent)
 	})
 
 	t.Run("returns error for unknown agent", func(t *testing.T) {

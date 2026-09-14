@@ -331,7 +331,7 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Tags("agent").
 			PathParam("id", "Workspace ID").
 			Accepts(proto.AgentSetMainRequest{}).
-			Fails(400, 404, 500).
+			Fails(400, 404, 409, 500).
 			Handle(c.handlePostWorkspaceAgentMain),
 
 		apigen.Get("/v1/workspaces/{id}/agent/sessions/{sid}").

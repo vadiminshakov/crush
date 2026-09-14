@@ -39,6 +39,7 @@ type runCoordinator struct {
 
 	setMainAgentErr  error
 	lastMainAgentSet atomic.Value
+	busy             bool
 }
 
 func newRunCoordinator(returnFn func(ctx context.Context) error) *runCoordinator {
@@ -72,7 +73,7 @@ func (s *runCoordinator) BeginAccepted(sessionID string) *agent.AcceptedRun {
 }
 func (s *runCoordinator) Cancel(string) {}
 func (s *runCoordinator) CancelAll()    {}
-func (s *runCoordinator) IsBusy() bool  { return false }
+func (s *runCoordinator) IsBusy() bool  { return s.busy }
 func (s *runCoordinator) IsSessionBusy(string) bool {
 	return false
 }
