@@ -1008,17 +1008,20 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 	largeModel = newRequestTimeoutModel(largeModel, requestTimeout)
 	smallModel = newRequestTimeoutModel(smallModel, requestTimeout)
 
-	return Model{
+	large := Model{
 		Model:      largeModel,
 		CatwalkCfg: *largeCatwalkModel,
 		ModelCfg:   largeModelCfg,
 		FlatRate:   largeProviderCfg.FlatRate,
-	}, Model{
+	}
+	small := Model{
 		Model:      smallModel,
 		CatwalkCfg: *smallCatwalkModel,
 		ModelCfg:   smallModelCfg,
 		FlatRate:   smallProviderCfg.FlatRate,
-	}, nil
+	}
+
+	return large, small, nil
 }
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
