@@ -1491,11 +1491,13 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Placeholder = "Run a shell command"
 		} else if m.isAgentBusy() {
 			m.textarea.Placeholder = m.workingPlaceholder
+		} else if m.mode == uiInputModePlan {
+			m.textarea.Placeholder = "Let's plan"
 		} else {
 			m.textarea.Placeholder = m.readyPlaceholder
 		}
 		if !m.bangMode && m.mode != uiInputModePlan && m.yoloModeCached() {
-			m.textarea.Placeholder = "Yolo mode!"
+			m.textarea.Placeholder = "Go crazy"
 		}
 	}
 	if m.textarea.Placeholder != prevPlaceholder {
@@ -2698,11 +2700,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				return true
 			}
 			yolo := m.toggleYoloMode()
-			status := "disabled"
 			if yolo {
-				status = "enabled"
+				cmds = append(cmds, util.CmdHandler(util.InfoMsg{Type: util.InfoTypeYolo, Msg: yoloModeBannerMsg}))
+			} else {
+				cmds = append(cmds, util.ReportInfo("Yolo mode disabled"))
 			}
-			cmds = append(cmds, util.ReportInfo("Yolo mode "+status))
 			return true
 		}
 		return false
@@ -3267,6 +3269,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	// Add status and help layer
 	m.status.SetHideHelp(isOnboarding)
+	m.status.SetMode(m.mode, m.yoloModeCached())
 	m.status.Draw(scr, layout.status)
 
 	// Draw completions popup if open
@@ -3490,8 +3493,9 @@ func (m *UI) ShortHelp() []key.Binding {
 		// if m.session == nil {
 		// no session selected
 		binds = append(binds,
-			k.ShiftTab,
+			k.Tab,
 			commands,
+			k.ShiftTab,
 			k.Models,
 			k.Editor.Newline,
 		)
@@ -4167,13 +4171,13 @@ func (m *UI) setEditorPrompt(yolo bool) {
 	m.textarea.SetPromptFunc(4, m.normalPromptFunc)
 }
 
-// normalPromptFunc returns the normal editor prompt style ("  > " on first
-// line, "::: " on subsequent lines).
+// normalPromptFunc returns the normal editor prompt style ("> " on the
+// first line, "::: " on subsequent lines).
 func (m *UI) normalPromptFunc(info textarea.PromptInfo) string {
 	t := m.com.Styles
 	if info.LineNumber == 0 {
 		if info.Focused {
-			return "  > "
+			return t.Editor.PromptNormalIconFocused.Render()
 		}
 		return "::: "
 	}
@@ -4271,20 +4275,21 @@ func (m *UI) switchPlanToYolo() tea.Cmd {
 	return m.setInputMode(uiInputModeCode)
 }
 
+// Mode banner copy shown in the status bar after switching modes.
+const (
+	planModeBannerMsg = "Plan with Crush before generating any code."
+	yoloModeBannerMsg = "Skip permission prompts. System level commands will be blocked."
+)
+
 func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
-	label := "plan"
 	agentID := config.AgentPlan
 	if target == uiInputModeCode {
-		label = "code"
 		agentID = config.AgentCoder
 	}
 
 	// YOLO is orthogonal to the input mode, so report it alongside the mode
-	// instead of labeling a YOLO-enabled coder as plain "code".
-	yolo := m.com.Workspace.PermissionSkipRequests()
-	if yolo && target == uiInputModeCode {
-		label = "yolo"
-	}
+	// instead of treating a YOLO-enabled coder as plain "code".
+	yolo := target == uiInputModeCode && m.com.Workspace.PermissionSkipRequests()
 
 	// The agent switch is an HTTP round-trip in client/server mode, so it
 	// runs off the update loop together with the model update. The mode and
@@ -4298,9 +4303,9 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 			err = m.com.Workspace.UpdateAgentModel(context.Background())
 		}
 		return modeSwitchedMsg{
-			mode:  target,
-			label: label,
-			err:   err,
+			mode: target,
+			yolo: yolo,
+			err:  err,
 		}
 	}
 }
@@ -4318,7 +4323,15 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 	if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
 		cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
 	}
-	return append(cmds, util.ReportInfo("input mode: "+msg.label))
+	switch {
+	case msg.mode == uiInputModePlan:
+		cmds = append(cmds, util.CmdHandler(util.InfoMsg{Type: util.InfoTypePlan, Msg: planModeBannerMsg}))
+	case msg.yolo:
+		cmds = append(cmds, util.CmdHandler(util.InfoMsg{Type: util.InfoTypeYolo, Msg: yoloModeBannerMsg}))
+	default:
+		cmds = append(cmds, util.ReportInfo("input mode: code"))
+	}
+	return cmds
 }
 
 // modeSwitchedMsg reports that the async agent switch started by
@@ -4326,7 +4339,7 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 type modeSwitchedMsg struct {
 	continueSessionID string
 	mode              uiInputMode
-	label             string
+	yolo              bool
 	err               error
 }
 

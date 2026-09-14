@@ -545,7 +545,7 @@ func TestSetInputMode_TracksModeSwitching(t *testing.T) {
 	require.True(t, ok)
 	require.NoError(t, msg.err)
 	require.Equal(t, uiInputModeCode, msg.mode)
-	require.Equal(t, "code", msg.label)
+	require.False(t, msg.yolo)
 }
 
 func TestHandlePlanHandoff_SetsPendingPlan(t *testing.T) {
@@ -673,8 +673,8 @@ func TestPlanPromptIgnoresYOLO(t *testing.T) {
 	u.textarea.SetWidth(40)
 	u.textarea.Focus()
 	u.setEditorPrompt(true)
-	require.Contains(t, u.textarea.View(), " P ")
-	require.NotContains(t, u.textarea.View(), " Y ")
+	require.Contains(t, u.textarea.View(), "⏸")
+	require.NotContains(t, u.textarea.View(), " ! ")
 }
 
 func TestGeneratedPlanContinuationIsHidden(t *testing.T) {

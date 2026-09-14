@@ -149,9 +149,11 @@ type Styles struct {
 	Editor struct {
 		Textarea textarea.Styles
 
-		// Normal mode prompt (default "::: ").
-		PromptNormalFocused lipgloss.Style
-		PromptNormalBlurred lipgloss.Style
+		// Normal mode prompt ("> " icon on the first line, "::: " after).
+		PromptNormalIconFocused lipgloss.Style
+		PromptNormalIconBlurred lipgloss.Style
+		PromptNormalFocused     lipgloss.Style
+		PromptNormalBlurred     lipgloss.Style
 
 		// Plan mode prompt.
 		PromptPlanIconFocused lipgloss.Style
@@ -580,6 +582,16 @@ type Styles struct {
 	// Status bar and help
 	Status struct {
 		Help lipgloss.Style
+
+		// Mode badges shown before the help hints.
+		ModeBadgePlan lipgloss.Style
+		ModeBadgeYolo lipgloss.Style
+
+		// Full-width banners shown when switching modes.
+		ModeBannerPlan      lipgloss.Style
+		ModeBannerPlanBadge lipgloss.Style
+		ModeBannerYolo      lipgloss.Style
+		ModeBannerYoloBadge lipgloss.Style
 
 		ErrorIndicator   lipgloss.Style
 		WarnIndicator    lipgloss.Style
