@@ -71,6 +71,10 @@ var (
 const (
 	planHandoffQuestion       = "Ready to start coding?"
 	planHandoffFeedbackPrompt = "What should change?"
+
+	// planHandoffIndent shifts the choice elements right so they sit
+	// under the question icon rather than at the left edge.
+	planHandoffIndent = 2
 )
 
 type planHandoffChoiceLayout struct {
@@ -220,7 +224,7 @@ func (p *PlanHandoffInline) Height(width int) int {
 		return p.choiceLayout(width).height
 	}
 	iconPrompt := questionIconPrompt(p.com.Styles, p.focused)
-	return sectionHeight(planHandoffFeedbackPrompt, max(1, width-lipgloss.Width(iconPrompt))) +
+	return sectionHeight(planHandoffFeedbackPrompt, max(1, width-planHandoffIndent-lipgloss.Width(iconPrompt))) +
 		1 + p.editor.Height() + 1
 }
 
@@ -229,7 +233,7 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 	iconPrompt := questionIconPrompt(p.com.Styles, p.focused)
 	iconWidth := lipgloss.Width(iconPrompt)
 	question := iconPrompt + p.com.Styles.Editor.QuestionUnselected.Render(
-		ansi.Wrap(planHandoffQuestion, max(1, width-iconWidth), ""),
+		ansi.Wrap(planHandoffQuestion, max(1, width-planHandoffIndent-iconWidth), ""),
 	)
 
 	hoveredBtn := -1
@@ -272,7 +276,7 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 	}
 
 	spacing := " "
-	if lipgloss.Width(common.ButtonGroup(p.com.Styles, buttons, spacing)) > width {
+	if lipgloss.Width(common.ButtonGroup(p.com.Styles, buttons, spacing)) > width-planHandoffIndent {
 		spacing = "\n"
 	}
 	buttonHeight := lipgloss.Height(common.ButtonGroup(p.com.Styles, buttons, spacing))
@@ -280,7 +284,7 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 		question: question,
 		buttons:  buttons,
 		spacing:  spacing,
-		height:   lipgloss.Height(question) + 1 + buttonHeight + 1,
+		height:   lipgloss.Height(question) + 1 + buttonHeight + 2,
 	}
 }
 
@@ -292,12 +296,13 @@ func (p *PlanHandoffInline) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	y := area.Min.Y
 	layout := p.choiceLayout(area.Dx())
-	y += drawStyledText(scr, image.Rect(area.Min.X, y, area.Max.X, area.Max.Y), layout.question)
+	y += drawStyledText(scr, image.Rect(area.Min.X+planHandoffIndent, y, area.Max.X, area.Max.Y), layout.question)
 	y++ // blank
 
-	p.compositor = common.ButtonHitCompositor(p.com.Styles, layout.buttons, layout.spacing, area.Min.X, y)
+	buttonsX := area.Min.X + planHandoffIndent
+	p.compositor = common.ButtonHitCompositor(p.com.Styles, layout.buttons, layout.spacing, buttonsX, y)
 	buttons := common.ButtonGroup(p.com.Styles, layout.buttons, layout.spacing)
-	drawStyledText(scr, image.Rect(area.Min.X, y, area.Max.X, area.Max.Y), buttons)
+	drawStyledText(scr, image.Rect(buttonsX, y, area.Max.X, area.Max.Y), buttons)
 
 	return nil
 }
@@ -306,10 +311,11 @@ func (p *PlanHandoffInline) drawEditor(scr uv.Screen, area uv.Rectangle) *tea.Cu
 	y := area.Min.Y
 	iconPrompt := questionIconPrompt(p.com.Styles, p.focused)
 	iconWidth := lipgloss.Width(iconPrompt)
+	blockX := area.Min.X + planHandoffIndent
 	questionText := p.com.Styles.Editor.QuestionUnselected.Render(
-		ansi.Wrap(planHandoffFeedbackPrompt, max(1, area.Dx()-iconWidth), ""),
+		ansi.Wrap(planHandoffFeedbackPrompt, max(1, area.Dx()-planHandoffIndent-iconWidth), ""),
 	)
-	y += drawStyledText(scr, image.Rect(area.Min.X, y, area.Max.X, area.Max.Y), iconPrompt+questionText)
+	y += drawStyledText(scr, image.Rect(blockX, y, area.Max.X, area.Max.Y), iconPrompt+questionText)
 	y++
 
 	promptPrefix := p.com.Styles.Editor.QuestionBody.Render("> ")
@@ -317,9 +323,9 @@ func (p *PlanHandoffInline) drawEditor(scr uv.Screen, area uv.Rectangle) *tea.Cu
 	p.SetWidth(area.Dx())
 	editorCursor := p.editor.Cursor()
 	p.editorTextArea = image.Rect(
-		area.Min.X+prefixWidth,
+		blockX+prefixWidth,
 		y,
-		min(area.Max.X, area.Min.X+prefixWidth+p.editor.Width()),
+		min(area.Max.X, blockX+prefixWidth+p.editor.Width()),
 		min(area.Max.Y, y+p.editor.Height()),
 	)
 	editorView := p.editor.View()
@@ -340,10 +346,10 @@ func (p *PlanHandoffInline) drawEditor(scr uv.Screen, area uv.Rectangle) *tea.Cu
 		if row > 0 {
 			text = strings.Repeat(" ", prefixWidth) + line
 		}
-		drawStyledText(scr, image.Rect(area.Min.X, y+row, area.Max.X, y+row+1), text)
+		drawStyledText(scr, image.Rect(blockX, y+row, area.Max.X, y+row+1), text)
 		if editorCursor != nil && editorCursor.Y == row {
 			current := *editorCursor
-			current.X += prefixWidth
+			current.X += planHandoffIndent + prefixWidth
 			current.Y += y - area.Min.Y
 			cursor = &current
 		}
@@ -357,7 +363,7 @@ func (p *PlanHandoffInline) SetWidth(width int) {
 	promptPrefix := p.com.Styles.Editor.QuestionBody.Render("> ")
 	previousHeight := p.editor.Height()
 	previousWidth := p.editor.Width()
-	p.editor.SetWidth(max(1, width-2-lipgloss.Width(promptPrefix)))
+	p.editor.SetWidth(max(1, width-planHandoffIndent-2-lipgloss.Width(promptPrefix)))
 	if p.editor.Width() != previousWidth {
 		p.clearSelection()
 	}

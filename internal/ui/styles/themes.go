@@ -67,7 +67,7 @@ func CharmtonePantera() Styles {
 		successMoreSubtle: charmtone.Bok,
 		successMostSubtle: charmtone.Guac,
 		yolo:              charmtone.Zest,
-		plan:              charmtone.Hazy,
+		plan:              charmtone.Charple,
 
 		// ANSI 16-color palette for remapping raw terminal output
 		// (e.g. bang-mode shell commands) onto legible Charmtone colors.

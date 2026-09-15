@@ -481,9 +481,9 @@ func TestPlanHandoffRequestChangesRoutesEditorTextSelection(t *testing.T) {
 	scr := uv.NewScreenBuffer(80, u.layout.editor.Max.Y)
 	inline.Draw(scr, u.layout.editor)
 
-	u.Update(tea.MouseClickMsg{X: 2, Y: 12})
-	u.Update(tea.MouseMotionMsg{X: 6, Y: 12})
-	_, cmd := u.Update(tea.MouseReleaseMsg{X: 6, Y: 12})
+	u.Update(tea.MouseClickMsg{X: 4, Y: 12})
+	u.Update(tea.MouseMotionMsg{X: 8, Y: 12})
+	_, cmd := u.Update(tea.MouseReleaseMsg{X: 8, Y: 12})
 
 	require.Equal(t, "copy", inline.SelectedText())
 	require.NotNil(t, cmd)

@@ -133,10 +133,10 @@ func TestPlanHandoffRequestChangesMouseSelectionAcrossLines(t *testing.T) {
 		p := newTestPlanHandoff()
 		p.SetFocused(true)
 		p.HandleKey(tea.KeyPressMsg{Code: 'n', Text: "n"})
-		p.SetWidth(12)
+		p.SetWidth(14)
 		p.editor.SetValue("one two three")
-		scr := uv.NewScreenBuffer(12, p.Height(12))
-		p.Draw(scr, image.Rect(0, 0, 12, p.Height(12)))
+		scr := uv.NewScreenBuffer(14, p.Height(14))
+		p.Draw(scr, image.Rect(0, 0, 14, p.Height(14)))
 
 		textX, textY := p.editorTextArea.Min.X, p.editorTextArea.Min.Y
 		require.True(t, p.HandleMouseDown(textX, textY))
@@ -160,7 +160,7 @@ func TestPlanHandoffEscapePreservesDraft(t *testing.T) {
 	require.False(t, p.editor.Focused())
 	require.Equal(t, "Keep this draft", p.editor.Value())
 	require.True(t, p.HeightChanged())
-	require.Equal(t, 4, p.Height(80))
+	require.Equal(t, 5, p.Height(80))
 
 	done, _ = p.HandleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	require.False(t, done)
@@ -249,7 +249,7 @@ func TestPlanHandoffChoiceQuestionBadgeFollowsFocus(t *testing.T) {
 	require.Contains(t, focusedLine, planHandoffQuestion)
 	requirePlanHandoffColorEqual(t,
 		sty.Editor.PromptQuestionIconFocused.GetBackground(),
-		focused.CellAt(1, 0).Style.Bg)
+		focused.CellAt(1+planHandoffIndent, 0).Style.Bg)
 
 	p.SetFocused(false)
 	blurred := uv.NewScreenBuffer(80, p.Height(80))
@@ -259,7 +259,7 @@ func TestPlanHandoffChoiceQuestionBadgeFollowsFocus(t *testing.T) {
 	require.Contains(t, blurredLine, planHandoffQuestion)
 	requirePlanHandoffColorEqual(t,
 		sty.Editor.PromptQuestionIconBlurred.GetBackground(),
-		blurred.CellAt(1, 0).Style.Bg)
+		blurred.CellAt(1+planHandoffIndent, 0).Style.Bg)
 }
 
 // When the chat has focus the handoff must keep its focused layout — the
