@@ -263,8 +263,8 @@ func TestPlanHandoffChoiceQuestionBadgeFollowsFocus(t *testing.T) {
 }
 
 // When the chat has focus the handoff must keep its focused layout — the
-// question and all three buttons — rendered in blurred colors instead of
-// collapsing to a one-line prompt.
+// question and all three buttons — rendered in the inactive (lighter)
+// button colors instead of collapsing to a one-line prompt.
 func TestPlanHandoffBlurredViewKeepsChoiceLayout(t *testing.T) {
 	t.Parallel()
 
@@ -286,8 +286,10 @@ func TestPlanHandoffBlurredViewKeepsChoiceLayout(t *testing.T) {
 
 	sty := styles.CharmtonePantera()
 	focusedBg := sty.Button.Focused.GetBackground()
-	blurredBg := sty.Button.Blurred.GetBackground()
-	var sawBlurredButton bool
+	inactiveBg := sty.Button.Inactive.GetBackground()
+	require.NotEqual(t, inactiveBg, sty.Button.Blurred.GetBackground(),
+		"the inactive button style must be distinct from the blurred one")
+	var sawInactiveButton bool
 	for y, line := range blurred.Lines {
 		for x, cell := range line {
 			if cell.Width == 0 || cell.Content == " " {
@@ -295,12 +297,12 @@ func TestPlanHandoffBlurredViewKeepsChoiceLayout(t *testing.T) {
 			}
 			require.False(t, planHandoffColorsEqual(focusedBg, cell.Style.Bg),
 				"blurred handoff must not use the focused button background at (%d,%d)", x, y)
-			if planHandoffColorsEqual(blurredBg, cell.Style.Bg) {
-				sawBlurredButton = true
+			if planHandoffColorsEqual(inactiveBg, cell.Style.Bg) {
+				sawInactiveButton = true
 			}
 		}
 	}
-	require.True(t, sawBlurredButton, "blurred handoff must render buttons with the blurred style")
+	require.True(t, sawInactiveButton, "blurred handoff must render buttons with the inactive style")
 
 	var sawFocusedButton bool
 	for _, line := range focused.Lines {

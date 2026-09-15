@@ -236,8 +236,10 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 	if p.focused {
 		hoveredBtn = common.HitButtonIndex(p.compositor, p.hoverX, p.hoverY)
 	}
-	// When the chat has focus the handoff keeps its focused layout but every
-	// button renders blurred, mirroring the focused view in muted colors.
+	// When the chat has focus the handoff keeps its focused layout but
+	// every button renders inactive: lighter than the blurred style so
+	// the choices stay legible outside the pane.
+	inactive := !p.focused
 	selectedChoice := p.selectedChoice
 	if !p.focused {
 		selectedChoice = -1
@@ -247,6 +249,7 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 			Text:           "Start coding",
 			Selected:       selectedChoice == choiceStartCoding,
 			Hovered:        hoveredBtn == choiceStartCoding,
+			Inactive:       inactive,
 			Padding:        3,
 			UnderlineIndex: 6,
 		},
@@ -254,6 +257,7 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 			Text:           "Code with YOLO",
 			Selected:       selectedChoice == choiceCodeYOLO,
 			Hovered:        hoveredBtn == choiceCodeYOLO,
+			Inactive:       inactive,
 			Padding:        3,
 			UnderlineIndex: 10,
 		},
@@ -261,6 +265,7 @@ func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 			Text:           "Revise plan",
 			Selected:       selectedChoice == choiceRevisePlan,
 			Hovered:        hoveredBtn == choiceRevisePlan,
+			Inactive:       inactive,
 			Padding:        3,
 			UnderlineIndex: 10,
 		},

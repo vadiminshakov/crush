@@ -139,8 +139,12 @@ type Styles struct {
 
 	// Buttons
 	Button struct {
-		Focused  lipgloss.Style
-		Blurred  lipgloss.Style
+		Focused lipgloss.Style
+		Blurred lipgloss.Style
+		// Inactive styles buttons of a prompt that is not in the
+		// active pane: slightly lighter than Blurred so the choices
+		// stay legible while the chat has focus.
+		Inactive lipgloss.Style
 		Hovered  lipgloss.Style
 		Negative lipgloss.Style // Selected negative/destructive action.
 	}

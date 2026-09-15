@@ -18,6 +18,10 @@ type ButtonOpts struct {
 	Selected bool
 	// Hovered indicates whether the mouse is hovering over the button
 	Hovered bool
+	// Inactive marks a button inside a prompt that is not in the active
+	// pane. It renders lighter than the plain blurred style so the
+	// choices stay legible while the chat has focus.
+	Inactive bool
 	// Padding inner horizontal padding defaults to 2 if this is 0
 	Padding int
 }
@@ -32,6 +36,8 @@ func Button(t *styles.Styles, opts ButtonOpts) string {
 		style = t.Button.Hovered.Bold(true)
 	} else if opts.Selected {
 		style = t.Button.Focused
+	} else if opts.Inactive {
+		style = t.Button.Inactive
 	}
 
 	text := opts.Text
