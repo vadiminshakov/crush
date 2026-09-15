@@ -1583,6 +1583,7 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 
 	// Load nested tool calls for agent/agentic_fetch tools.
 	m.loadNestedToolCalls(items)
+	m.setMessagePlanFlags(items)
 
 	// If the user switches between sessions while the agent is working we
 	// want to make sure the animations are shown. Gate on the agent actually
@@ -1692,6 +1693,21 @@ func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
 	}
 }
 
+// setMessagePlanFlags marks assistant message items as plan-agent output
+// while the UI is in plan mode, so their streaming content renders as the
+// open plan card. Finished non-plan messages ignore the flag, so reloading
+// an old session in plan mode never grows spurious cards.
+func (m *UI) setMessagePlanFlags(items []chat.MessageItem) {
+	if m.mode != uiInputModePlan {
+		return
+	}
+	for _, item := range items {
+		if a, ok := item.(*chat.AssistantMessageItem); ok {
+			a.SetPlanAgent(true)
+		}
+	}
+}
+
 // appendSessionMessage appends a new message to the current session in the chat
 // if the message is a tool result it will update the corresponding tool call message
 func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
@@ -1723,6 +1739,7 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 		m.chat.ScrollToBottom()
 	case message.Assistant:
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil, m.com.Workspace.WorkingDir())
+		m.setMessagePlanFlags(items)
 		m.chat.AppendMessages(items...)
 		if m.chat.Follow() {
 			m.chat.ScrollToBottom()
@@ -1825,6 +1842,7 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 	if existingItem != nil {
 		if assistantItem, ok := existingItem.(*chat.AssistantMessageItem); ok {
 			assistantItem.SetMessage(&msg)
+			assistantItem.SetPlanAgent(m.mode == uiInputModePlan)
 		}
 	}
 

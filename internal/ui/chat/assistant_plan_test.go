@@ -96,6 +96,41 @@ func TestAssistantMessageItem_PlanCardFitsAvailableWidth(t *testing.T) {
 	}
 }
 
+func TestAssistantMessageItem_PlanStreamingCardIsOpenUntilMarker(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	mk := func(text string, finished bool) *message.Message {
+		parts := []message.ContentPart{message.TextContent{Text: text}}
+		if finished {
+			parts = append(parts, message.Finish{Reason: message.FinishReasonEndTurn, Time: 1})
+		}
+		return &message.Message{
+			ID:    "plan-streaming-" + fmt.Sprintf("%t", finished),
+			Role:  message.Assistant,
+			Parts: parts,
+		}
+	}
+
+	streaming := NewAssistantMessageItem(&sty, mk("# Plan\n\nIn progress", false)).(*AssistantMessageItem)
+	streaming.SetPlanAgent(true)
+	got := streaming.RawRender(72)
+	require.Contains(t, got, "╭", "streaming plan must draw the top border")
+	require.Contains(t, got, "│", "streaming plan must draw the side borders")
+	require.NotContains(t, got, "╰", "streaming plan must withhold the bottom border")
+
+	done := NewAssistantMessageItem(&sty, mk("# Plan\n\nDone\n\n<!-- CRUSH_PLAN_READY -->", true)).(*AssistantMessageItem)
+	done.SetPlanAgent(true)
+	closed := done.RawRender(72)
+	require.Contains(t, closed, "╭", "finished plan must draw the top border")
+	require.Contains(t, closed, "╰", "finished plan must close the bottom border")
+
+	interrupted := NewAssistantMessageItem(&sty, mk("Let me look around.", true)).(*AssistantMessageItem)
+	interrupted.SetPlanAgent(true)
+	plain := interrupted.RawRender(72)
+	require.NotContains(t, plain, "╭", "a finished message without the marker must not render a card")
+}
+
 func TestAssistantMessageItem_NonPlanRepliesHaveNoPlanCard(t *testing.T) {
 	t.Parallel()
 

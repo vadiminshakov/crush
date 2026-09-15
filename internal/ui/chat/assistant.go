@@ -184,6 +184,12 @@ type AssistantMessageItem struct {
 	thinkingViewMode  thinkingViewMode
 	thinkingBoxHeight int // Tracks the rendered thinking box height for click detection.
 
+	// planAgent marks this item as plan-agent output. While the plan
+	// streams (the message is not finished), the content renders as
+	// an open plan card: top and side borders only, with the bottom
+	// border withheld until the plan-ready marker lands.
+	planAgent bool
+
 	// Incremental FNV-64a hash of the thinking text. Avoids
 	// re-hashing the entire accumulated text on every streaming
 	// tick. thinkingHashSample holds a short prefix of the hashed
@@ -214,6 +220,13 @@ type AssistantMessageItem struct {
 	// thinking text, which burns CPU and starves the terminal emulator
 	// during long reasoning traces.
 	streamingThinking streamingMarkdown
+
+	// streamingPlan applies the same stable-prefix caching to the plan
+	// card while the plan streams, so each streaming flush only
+	// re-renders the trailing partial of the plan document. Kept apart
+	// from streamingContent because it renders through the plan
+	// renderer, whose cached prefix is not interchangeable.
+	streamingPlan streamingMarkdown
 }
 
 var _ Expandable = (*AssistantMessageItem)(nil)
@@ -484,9 +497,34 @@ func (a *AssistantMessageItem) thinkingHashIncremental(thinking string) uint64 {
 }
 
 // contentKey returns the (srcHash, extra) cache key components for the
-// main content section.
+// main content section. extra folds in the streaming-plan state so a
+// message flips between the plain, open-card, and closed-card renders
+// as the plan run progresses.
 func (a *AssistantMessageItem) contentKey() (uint64, uint64) {
-	return fnv64(a.message.Content().Text), 0
+	var planStreaming byte
+	if a.planStreaming() {
+		planStreaming = 1
+	}
+	return fnv64(a.message.Content().Text), uint64(planStreaming)
+}
+
+// SetPlanAgent flags this item as plan-agent output (or clears the
+// flag). The flag drives the open plan card shown while the plan
+// streams.
+func (a *AssistantMessageItem) SetPlanAgent(plan bool) {
+	if a.planAgent == plan {
+		return
+	}
+	a.planAgent = plan
+	a.Bump()
+}
+
+// planStreaming reports whether the plan is still streaming into
+// this message: the item belongs to the plan agent and the message
+// has not finished. The bottom border is withheld until the
+// plan-ready marker lands.
+func (a *AssistantMessageItem) planStreaming() bool {
+	return a.planAgent && !a.message.IsFinished()
 }
 
 // errorKey returns the (srcHash, extra) cache key components for the
@@ -536,6 +574,11 @@ func (a *AssistantMessageItem) cachedContent(width int) string {
 	var out string
 	if common.PlanReadyMarkerPresent(text) {
 		out = a.renderPlanCard(common.StripPlanReadyMarker(text), width)
+	} else if a.planStreaming() {
+		// While the plan streams, draw the card as an open box: top
+		// and side borders only. The bottom border closes once the
+		// plan-ready marker arrives.
+		out = a.renderPlanCardStreaming(text, width)
 	} else {
 		out = a.renderMarkdown(text, width)
 	}
@@ -559,20 +602,31 @@ func (a *AssistantMessageItem) renderPlanCard(text string, width int) string {
 	if err != nil {
 		rendered = text
 	}
-	return renderPlanBox(box, rendered, width)
+	return renderPlanBox(box, rendered, width, true)
 }
 
-// renderPlanBox applies the card layout, then fills in the card background on
-// every parsed cell that does not carry one of its own, so nested Markdown
-// resets cannot expose the terminal background. Cells that DO carry a
-// background keep it — that is how inline code keeps its chip inside the card.
-// Foregrounds, text attributes, and hyperlinks remain unchanged.
+// renderPlanCardStreaming renders the plan while it is still streaming
+// as an open card: top and side borders only, no bottom border. It
+// routes through the stable-prefix streaming cache so each streaming
+// flush only re-renders the trailing partial of the plan document.
+func (a *AssistantMessageItem) renderPlanCardStreaming(text string, width int) string {
+	box, innerWidth := planBoxLayout(a.sty.Messages.PlanBox, width)
+	renderer := common.PlanMarkdownRenderer(a.sty, innerWidth)
+	rendered := a.streamingPlan.Render(text, innerWidth, renderer)
+	return renderPlanBox(box, rendered, width, false)
+}
+
 // renderPlanBox applies the card layout: an un-filled bordered box whose
 // padding lets the terminal background show through. Only intentional
 // backgrounds (the inline-code chip, the H1 badge) keep a color of their
-// own; everything else renders on the terminal background.
-func renderPlanBox(style lipgloss.Style, content string, width int) string {
+// own; everything else renders on the terminal background. With closed
+// false the bottom border is withheld, leaving the card open while the
+// plan streams.
+func renderPlanBox(style lipgloss.Style, content string, width int, closed bool) string {
 	style, innerWidth := planBoxLayout(style, width)
+	if !closed {
+		style = style.BorderBottom(false)
+	}
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, innerWidth, "")
@@ -771,6 +825,7 @@ func (a *AssistantMessageItem) clearCache() {
 	a.errorSec.reset()
 	a.streamingContent.Reset()
 	a.streamingThinking.Reset()
+	a.streamingPlan.Reset()
 	a.thinkingHash = 0
 	a.thinkingHashLen = 0
 	a.thinkingHashSample = ""

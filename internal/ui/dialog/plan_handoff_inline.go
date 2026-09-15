@@ -99,7 +99,7 @@ func NewPlanHandoffInline(com *common.Common) *PlanHandoffInline {
 		selectedChoice: choiceStartCoding,
 		editor:         editor,
 		keyLeftRight: key.NewBinding(
-			key.WithKeys("left", "right"),
+			key.WithKeys("left", "right", "h", "l"),
 			key.WithHelp("←/→", "switch"),
 		),
 		keyEnter: key.NewBinding(
@@ -170,7 +170,7 @@ func (p *PlanHandoffInline) HandleKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		return false, p.startEditing()
 	case key.Matches(msg, p.keyLeftRight):
 		delta := 1
-		if msg.String() == "left" {
+		if msg.String() == "left" || msg.String() == "h" {
 			delta = choiceCount - 1
 		}
 		p.selectedChoice = (p.selectedChoice + delta) % choiceCount
