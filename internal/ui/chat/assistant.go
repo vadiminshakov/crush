@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/styles"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -544,11 +543,10 @@ func (a *AssistantMessageItem) cachedContent(width int) string {
 	return out
 }
 
-// renderPlanCard renders the final plan message as a full-width card. The
-// markdown is rendered at the card's inner width (accounting for PlanBox's
-// horizontal padding) with the PlanMarkdown style, whose per-primitive
-// background keeps the card fill uninterrupted by glamour's SGR resets;
-// PlanBox then paints the padding and pads each line out to full width. The
+// renderPlanCard renders the final plan message as a full-width bordered
+// card. The markdown is rendered at the card's inner width (accounting for
+// PlanBox's horizontal frame) with the PlanMarkdown style; PlanBox then
+// draws the border and padding and pads each line out to full width. The
 // plan is final by the time the marker appears, so this bypasses the
 // streaming-markdown cache and renders directly, like renderThinking.
 func (a *AssistantMessageItem) renderPlanCard(text string, width int) string {
@@ -569,27 +567,17 @@ func (a *AssistantMessageItem) renderPlanCard(text string, width int) string {
 // resets cannot expose the terminal background. Cells that DO carry a
 // background keep it — that is how inline code keeps its chip inside the card.
 // Foregrounds, text attributes, and hyperlinks remain unchanged.
+// renderPlanBox applies the card layout: an un-filled bordered box whose
+// padding lets the terminal background show through. Only intentional
+// backgrounds (the inline-code chip, the H1 badge) keep a color of their
+// own; everything else renders on the terminal background.
 func renderPlanBox(style lipgloss.Style, content string, width int) string {
 	style, innerWidth := planBoxLayout(style, width)
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, innerWidth, "")
 	}
-	rendered := style.Width(innerWidth).Render(strings.Join(lines, "\n"))
-	cardWidth := lipgloss.Width(rendered)
-	cardHeight := lipgloss.Height(rendered)
-	scr := uv.NewScreenBuffer(cardWidth, cardHeight)
-	uv.NewStyledString(rendered).Draw(scr, uv.Rect(0, 0, cardWidth, cardHeight))
-
-	background := style.GetBackground()
-	for y := range scr.Lines {
-		for x := range scr.Lines[y] {
-			if scr.Lines[y][x].Style.Bg == nil {
-				scr.Lines[y][x].Style.Bg = background
-			}
-		}
-	}
-	return scr.Render()
+	return style.Width(innerWidth).Render(strings.Join(lines, "\n"))
 }
 
 // planBoxLayout returns a style and content width whose combined horizontal

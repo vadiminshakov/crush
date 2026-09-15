@@ -370,14 +370,10 @@ func quickStyle(o quickStyleOpts) Styles {
 		},
 	}
 
-	// PlanMarkdown keeps the rich markdown colors but paints the plan-card
-	// background under every primitive, so glamour's per-token SGR resets
-	// cannot punch holes in the card that PlanBox draws around the content.
-	//
-	// H2–H5 in s.Markdown only set Prefix; they rely on glamour inheriting
-	// Color/Bold from the base Heading style. Once withMarkdownBackground
-	// adds BackgroundColor to those primitives, glamour stops inheriting and
-	// the heading text renders without color/bold. Copy them explicitly.
+	// PlanMarkdown keeps the rich markdown colors for the plan card. H2–H5 in
+	// s.Markdown only set Prefix and rely on glamour inheriting Color/Bold
+	// from the base Heading style; copy them explicitly so section headings
+	// stand out inside the card.
 	planMD := s.Markdown
 	headingColor := hex(o.info)
 	headingBold := new(true)
@@ -399,16 +395,8 @@ func quickStyle(o quickStyleOpts) Styles {
 	planMD.H5.Prefix = "      "
 	planMD.Code.Color = hex(o.destructive)
 	planMD.Code.Bold = new(true)
-	// The card is painted in bgLeastVisible; the default inline-code chip
-	// (bgLessVisible) is only one step away from it and reads as no chip at
-	// all. bgMostVisible keeps the chip distinguishable inside the card.
-	planMD.Code.BackgroundColor = hex(o.bgMostVisible)
-	// H1 carries a primary-colored badge background in s.Markdown. renderPlanBox
-	// used to flatten it away; now that intentional backgrounds survive, pin H1
-	// to the card background so the plan heading keeps looking as it does today.
-	planMD.H1.BackgroundColor = hex(o.bgLeastVisible)
 	planMD.CodeBlock.Color = hex(o.fgBase)
-	s.PlanMarkdown = withMarkdownBackground(planMD, hex(o.bgLeastVisible))
+	s.PlanMarkdown = planMD
 
 	// QuietMarkdown style - muted colors on subtle background for thinking content.
 	plainBg := hex(o.bgLeastVisible)
@@ -976,8 +964,14 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Messages.SubduedHypercreditIcon = subtle
 	s.Messages.AssistantCanceled = lipgloss.NewStyle().Foreground(o.fgSubtle).Italic(true)
 
-	// Plan section styles
-	s.Messages.PlanBox = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.bgLeastVisible).Padding(1, 2)
+	// Plan section styles. The plan card is a bordered box with no background
+	// fill: the terminal background shows through, and only intentional chips
+	// (inline code, H1 badge) keep a background of their own.
+	s.Messages.PlanBox = lipgloss.NewStyle().
+		Foreground(o.fgBase).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(o.plan).
+		Padding(1, 2)
 
 	// Thinking section styles
 	s.Messages.ThinkingBox = subtle.Background(o.bgLeastVisible)
@@ -1146,42 +1140,3 @@ func quickStyle(o quickStyleOpts) Styles {
 // primitive that does not already set its own background, so glamour paints an
 // uninterrupted background under all rendered text. Primitives that carry an
 // intentional background of their own (e.g. H1, inline code) keep it.
-func withMarkdownBackground(cfg ansi.StyleConfig, bg *string) ansi.StyleConfig {
-	for _, p := range []*ansi.StylePrimitive{
-		&cfg.Document.StylePrimitive,
-		&cfg.BlockQuote.StylePrimitive,
-		&cfg.Paragraph.StylePrimitive,
-		&cfg.Heading.StylePrimitive,
-		&cfg.H1.StylePrimitive,
-		&cfg.H2.StylePrimitive,
-		&cfg.H3.StylePrimitive,
-		&cfg.H4.StylePrimitive,
-		&cfg.H5.StylePrimitive,
-		&cfg.H6.StylePrimitive,
-		&cfg.Text,
-		&cfg.Strikethrough,
-		&cfg.Emph,
-		&cfg.Strong,
-		&cfg.HorizontalRule,
-		&cfg.Item,
-		&cfg.Enumeration,
-		&cfg.Task.StylePrimitive,
-		&cfg.Link,
-		&cfg.LinkText,
-		&cfg.Image,
-		&cfg.ImageText,
-		&cfg.Code.StylePrimitive,
-		&cfg.CodeBlock.StylePrimitive,
-		&cfg.Table.StylePrimitive,
-		&cfg.DefinitionList.StylePrimitive,
-		&cfg.DefinitionTerm,
-		&cfg.DefinitionDescription,
-		&cfg.HTMLBlock.StylePrimitive,
-		&cfg.HTMLSpan.StylePrimitive,
-	} {
-		if p.BackgroundColor == nil {
-			p.BackgroundColor = bg
-		}
-	}
-	return cfg
-}

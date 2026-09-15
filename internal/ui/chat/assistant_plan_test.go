@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The plan card must leave no cell unpainted (an unset background exposes the
-// terminal behind the card), while intentional backgrounds — the inline-code
-// chip above all — survive the composition.
-func TestAssistantMessageItem_PlanCardFillsBackground(t *testing.T) {
+// The plan card paints no background of its own: ordinary cells expose the
+// terminal behind the card, while intentional backgrounds — the inline-code
+// chip and the H1 badge above all — survive the composition.
+func TestAssistantMessageItem_PlanCardKeepsIntentionalBackgrounds(t *testing.T) {
 	t.Parallel()
 
 	sty := styles.CharmtonePantera()
@@ -40,9 +40,10 @@ func TestAssistantMessageItem_PlanCardFillsBackground(t *testing.T) {
 
 	scr := renderANSIToScreen(first)
 
-	wantBackground := sty.Messages.PlanBox.GetBackground()
 	require.NotNil(t, sty.PlanMarkdown.Code.BackgroundColor, "inline code must declare a chip background")
 	codeBackground := lipgloss.Color(*sty.PlanMarkdown.Code.BackgroundColor)
+	require.NotNil(t, sty.PlanMarkdown.H1.BackgroundColor, "H1 must declare a badge background")
+	h1Background := lipgloss.Color(*sty.PlanMarkdown.H1.BackgroundColor)
 	var foundBold, foundItalic, foundLink, foundEmoji, foundCodeChip bool
 	for y, line := range scr.Lines {
 		for x, cell := range line {
@@ -50,9 +51,10 @@ func TestAssistantMessageItem_PlanCardFillsBackground(t *testing.T) {
 				continue
 			}
 			isCodeChip := colorsEqual(codeBackground, cell.Style.Bg)
-			if !isCodeChip {
-				requireColorEqual(t, wantBackground, cell.Style.Bg,
-					fmt.Sprintf("plan-card cell %q at (%d,%d) must carry the card background or an intentional one", cell.Content, x, y))
+			isH1Badge := colorsEqual(h1Background, cell.Style.Bg)
+			if !isCodeChip && !isH1Badge {
+				require.Nil(t, cell.Style.Bg,
+					fmt.Sprintf("plan-card cell %q at (%d,%d) must carry no background or an intentional one", cell.Content, x, y))
 			}
 			foundCodeChip = foundCodeChip || isCodeChip
 			foundBold = foundBold || cell.Content == "b" && cell.Style.Attrs&uv.AttrBold != 0
@@ -121,14 +123,7 @@ func TestAssistantMessageItem_NonPlanRepliesHaveNoPlanCard(t *testing.T) {
 			rendered := item.RawRender(72)
 
 			require.Equal(t, 1, lipgloss.Height(rendered), "non-plan replies must not receive card padding")
-			for _, line := range renderANSIToScreen(rendered).Lines {
-				for _, cell := range line {
-					if cell.Width > 0 && cell.Content != " " {
-						require.False(t, colorsEqual(sty.Messages.PlanBox.GetBackground(), cell.Style.Bg),
-							"non-plan reply text must not receive the plan-card background")
-					}
-				}
-			}
+			require.NotContains(t, rendered, "╭", "non-plan replies must not receive the plan-card border")
 		})
 	}
 }

@@ -332,7 +332,7 @@ type Styles struct {
 		SectionHeader      lipgloss.Style
 
 		// Plan section styles
-		PlanBox lipgloss.Style // Background+padding for the final plan message
+		PlanBox lipgloss.Style // Border+padding for the final plan message
 
 		// Thinking section styles
 		ThinkingBox            lipgloss.Style // Background for thinking content
