@@ -378,7 +378,7 @@ func TestHandlePlanHandoff_RequestChangesSendsFeedbackInPlanMode(t *testing.T) {
 	require.Equal(t, uiInputModePlan, u.mode)
 }
 
-func TestPlanHandoffCollapsePreservesAndRestoresInline(t *testing.T) {
+func TestPlanHandoffBlurPreservesAndRestoresInline(t *testing.T) {
 	t.Parallel()
 
 	u, _ := newPlanUI(t, "sess-1")
@@ -398,7 +398,7 @@ func TestPlanHandoffCollapsePreservesAndRestoresInline(t *testing.T) {
 	require.Same(t, inline, u.activeInline)
 	require.Equal(t, uiFocusMain, u.focus)
 	blurredHelp := u.ShortHelp()
-	require.Equal(t, "review plan", blurredHelp[0].Help().Desc)
+	require.Equal(t, "focus editor", blurredHelp[0].Help().Desc)
 	for _, binding := range blurredHelp {
 		require.NotEqual(t, "confirm", binding.Help().Desc)
 	}

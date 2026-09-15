@@ -232,30 +232,85 @@ func TestPlanHandoffAdaptiveChoiceLayout(t *testing.T) {
 	require.Equal(t, firstY+1, secondY)
 }
 
-func TestPlanHandoffChoiceCopyHasNoQuestionBadge(t *testing.T) {
+// The choice view carries the question badge; the badge must follow focus:
+// the focused icon while the editor is focused, the blurred icon when the
+// chat has focus.
+func TestPlanHandoffChoiceQuestionBadgeFollowsFocus(t *testing.T) {
 	t.Parallel()
 
+	sty := styles.CharmtonePantera()
 	p := newTestPlanHandoff()
-	scr := uv.NewScreenBuffer(80, p.Height(80))
-	p.Draw(scr, image.Rect(0, 0, 80, p.Height(80)))
-	rendered := strings.TrimSpace(ansi.Strip(scr.Render()))
 
-	require.True(t, strings.HasPrefix(rendered, planHandoffQuestion))
-	require.Contains(t, rendered, "Start coding")
-	require.Contains(t, rendered, "Revise plan")
-	require.NotContains(t, rendered, " ? "+planHandoffQuestion)
+	p.SetFocused(true)
+	focused := uv.NewScreenBuffer(80, p.Height(80))
+	p.Draw(focused, image.Rect(0, 0, 80, p.Height(80)))
+	focusedLine := ansi.Strip(strings.SplitN(focused.Render(), "\n", 2)[0])
+	require.Contains(t, focusedLine, "?")
+	require.Contains(t, focusedLine, planHandoffQuestion)
+	requirePlanHandoffColorEqual(t,
+		sty.Editor.PromptQuestionIconFocused.GetBackground(),
+		focused.CellAt(1, 0).Style.Bg)
+
+	p.SetFocused(false)
+	blurred := uv.NewScreenBuffer(80, p.Height(80))
+	p.Draw(blurred, image.Rect(0, 0, 80, p.Height(80)))
+	blurredLine := ansi.Strip(strings.SplitN(blurred.Render(), "\n", 2)[0])
+	require.Contains(t, blurredLine, "?")
+	require.Contains(t, blurredLine, planHandoffQuestion)
+	requirePlanHandoffColorEqual(t,
+		sty.Editor.PromptQuestionIconBlurred.GetBackground(),
+		blurred.CellAt(1, 0).Style.Bg)
 }
 
-func TestPlanHandoffCollapsedView(t *testing.T) {
+// When the chat has focus the handoff must keep its focused layout — the
+// question and all three buttons — rendered in blurred colors instead of
+// collapsing to a one-line prompt.
+func TestPlanHandoffBlurredViewKeepsChoiceLayout(t *testing.T) {
 	t.Parallel()
 
 	p := newTestPlanHandoff()
-	scr := uv.NewScreenBuffer(80, p.CollapsedHeight())
-	p.DrawCollapsed(scr, image.Rect(0, 0, 80, p.CollapsedHeight()))
+	p.SetFocused(true)
+	focused := uv.NewScreenBuffer(80, p.Height(80))
+	p.Draw(focused, image.Rect(0, 0, 80, p.Height(80)))
 
-	require.True(t, p.ShouldCollapse(80, 30))
-	require.Equal(t, "review plan", p.CollapsedHelp())
-	require.Contains(t, ansi.Strip(scr.Render()), planHandoffCollapsedPrompt)
+	p.SetFocused(false)
+	height := p.Height(80)
+	blurred := uv.NewScreenBuffer(80, height)
+	p.Draw(blurred, image.Rect(0, 0, 80, height))
+
+	plain := ansi.Strip(blurred.Render())
+	require.Contains(t, plain, planHandoffQuestion)
+	require.Contains(t, plain, "Start coding")
+	require.Contains(t, plain, "Code with YOLO")
+	require.Contains(t, plain, "Revise plan")
+
+	sty := styles.CharmtonePantera()
+	focusedBg := sty.Button.Focused.GetBackground()
+	blurredBg := sty.Button.Blurred.GetBackground()
+	var sawBlurredButton bool
+	for y, line := range blurred.Lines {
+		for x, cell := range line {
+			if cell.Width == 0 || cell.Content == " " {
+				continue
+			}
+			require.False(t, planHandoffColorsEqual(focusedBg, cell.Style.Bg),
+				"blurred handoff must not use the focused button background at (%d,%d)", x, y)
+			if planHandoffColorsEqual(blurredBg, cell.Style.Bg) {
+				sawBlurredButton = true
+			}
+		}
+	}
+	require.True(t, sawBlurredButton, "blurred handoff must render buttons with the blurred style")
+
+	var sawFocusedButton bool
+	for _, line := range focused.Lines {
+		for _, cell := range line {
+			if cell.Width > 0 && cell.Content != " " && planHandoffColorsEqual(focusedBg, cell.Style.Bg) {
+				sawFocusedButton = true
+			}
+		}
+	}
+	require.True(t, sawFocusedButton, "focused handoff must highlight the selected button")
 }
 
 func TestPlanHandoffSetWidthRecalculatesFeedbackHeight(t *testing.T) {
@@ -355,9 +410,16 @@ func requirePlanHandoffColorEqual(t *testing.T, want, got color.Color) {
 	t.Helper()
 	require.NotNil(t, want)
 	require.NotNil(t, got)
-	wantR, wantG, wantB, wantA := want.RGBA()
-	gotR, gotG, gotB, gotA := got.RGBA()
-	require.Equal(t, [4]uint32{wantR, wantG, wantB, wantA}, [4]uint32{gotR, gotG, gotB, gotA})
+	require.True(t, planHandoffColorsEqual(want, got))
+}
+
+func planHandoffColorsEqual(left, right color.Color) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	leftR, leftG, leftB, leftA := left.RGBA()
+	rightR, rightG, rightB, rightA := right.RGBA()
+	return [4]uint32{leftR, leftG, leftB, leftA} == [4]uint32{rightR, rightG, rightB, rightA}
 }
 
 func TestPlanHandoffYOLO(t *testing.T) {

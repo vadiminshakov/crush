@@ -64,15 +64,13 @@ type PlanHandoffInline struct {
 }
 
 var (
-	_ InlineEditor            = (*PlanHandoffInline)(nil)
-	_ CollapsibleInlineEditor = (*PlanHandoffInline)(nil)
-	_ ResizableInlineEditor   = (*PlanHandoffInline)(nil)
+	_ InlineEditor          = (*PlanHandoffInline)(nil)
+	_ ResizableInlineEditor = (*PlanHandoffInline)(nil)
 )
 
 const (
-	planHandoffQuestion        = "Ready to start coding?"
-	planHandoffFeedbackPrompt  = "What should change?"
-	planHandoffCollapsedPrompt = "Plan ready · Tab for actions"
+	planHandoffQuestion       = "Ready to start coding?"
+	planHandoffFeedbackPrompt = "What should change?"
 )
 
 type planHandoffChoiceLayout struct {
@@ -221,35 +219,47 @@ func (p *PlanHandoffInline) Height(width int) int {
 	if !p.editing {
 		return p.choiceLayout(width).height
 	}
-	return sectionHeight(planHandoffFeedbackPrompt, max(1, width)) +
+	iconPrompt := questionIconPrompt(p.com.Styles, p.focused)
+	return sectionHeight(planHandoffFeedbackPrompt, max(1, width-lipgloss.Width(iconPrompt))) +
 		1 + p.editor.Height() + 1
 }
 
 func (p *PlanHandoffInline) choiceLayout(width int) planHandoffChoiceLayout {
 	width = max(1, width)
-	question := p.com.Styles.Editor.QuestionUnselected.Render(
-		ansi.Wrap(planHandoffQuestion, width, ""),
+	iconPrompt := questionIconPrompt(p.com.Styles, p.focused)
+	iconWidth := lipgloss.Width(iconPrompt)
+	question := iconPrompt + p.com.Styles.Editor.QuestionUnselected.Render(
+		ansi.Wrap(planHandoffQuestion, max(1, width-iconWidth), ""),
 	)
 
-	hoveredBtn := common.HitButtonIndex(p.compositor, p.hoverX, p.hoverY)
+	hoveredBtn := -1
+	if p.focused {
+		hoveredBtn = common.HitButtonIndex(p.compositor, p.hoverX, p.hoverY)
+	}
+	// When the chat has focus the handoff keeps its focused layout but every
+	// button renders blurred, mirroring the focused view in muted colors.
+	selectedChoice := p.selectedChoice
+	if !p.focused {
+		selectedChoice = -1
+	}
 	buttons := []common.ButtonOpts{
 		{
 			Text:           "Start coding",
-			Selected:       p.selectedChoice == choiceStartCoding,
+			Selected:       selectedChoice == choiceStartCoding,
 			Hovered:        hoveredBtn == choiceStartCoding,
 			Padding:        3,
 			UnderlineIndex: 6,
 		},
 		{
 			Text:           "Code with YOLO",
-			Selected:       p.selectedChoice == choiceCodeYOLO,
+			Selected:       selectedChoice == choiceCodeYOLO,
 			Hovered:        hoveredBtn == choiceCodeYOLO,
 			Padding:        3,
 			UnderlineIndex: 10,
 		},
 		{
 			Text:           "Revise plan",
-			Selected:       p.selectedChoice == choiceRevisePlan,
+			Selected:       selectedChoice == choiceRevisePlan,
 			Hovered:        hoveredBtn == choiceRevisePlan,
 			Padding:        3,
 			UnderlineIndex: 10,
@@ -289,10 +299,12 @@ func (p *PlanHandoffInline) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 func (p *PlanHandoffInline) drawEditor(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	y := area.Min.Y
+	iconPrompt := questionIconPrompt(p.com.Styles, p.focused)
+	iconWidth := lipgloss.Width(iconPrompt)
 	questionText := p.com.Styles.Editor.QuestionUnselected.Render(
-		ansi.Wrap(planHandoffFeedbackPrompt, max(1, area.Dx()), ""),
+		ansi.Wrap(planHandoffFeedbackPrompt, max(1, area.Dx()-iconWidth), ""),
 	)
-	y += drawStyledText(scr, image.Rect(area.Min.X, y, area.Max.X, area.Max.Y), questionText)
+	y += drawStyledText(scr, image.Rect(area.Min.X, y, area.Max.X, area.Max.Y), iconPrompt+questionText)
 	y++
 
 	promptPrefix := p.com.Styles.Editor.QuestionBody.Render("> ")
@@ -345,23 +357,6 @@ func (p *PlanHandoffInline) SetWidth(width int) {
 		p.clearSelection()
 	}
 	p.heightChanged = p.heightChanged || previousHeight != p.editor.Height()
-}
-
-// ShouldCollapse always uses the compact handoff while the chat has focus.
-func (p *PlanHandoffInline) ShouldCollapse(_, _ int) bool { return true }
-
-// CollapsedHeight returns the one-line compact handoff height.
-func (p *PlanHandoffInline) CollapsedHeight() int { return 1 }
-
-// CollapsedHelp returns the help description for restoring the handoff.
-func (p *PlanHandoffInline) CollapsedHelp() string { return "review plan" }
-
-// DrawCollapsed renders the persistent compact handoff while chat is focused.
-func (p *PlanHandoffInline) DrawCollapsed(scr uv.Screen, area uv.Rectangle) {
-	p.compositor = nil
-	label := ansi.Truncate(planHandoffCollapsedPrompt, max(0, area.Dx()), "…")
-	text := p.com.Styles.Messages.AssistantInfoModel.Render(label)
-	drawStyledText(scr, area, text)
 }
 
 // HeightChanged reports whether the current state changed its layout height.
