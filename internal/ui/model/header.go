@@ -62,7 +62,9 @@ func (h *header) refresh() {
 	h.logo = ""
 }
 
-// drawHeader draws the header for the given session.
+// drawHeader draws the header for the given session. lspErrorCount comes
+// from the UI's memoized LSP state: drawing runs on every frame and must not
+// probe the workspace (a synchronous HTTP round-trip in client/server mode).
 func (h *header) drawHeader(
 	scr uv.Screen,
 	area uv.Rectangle,
@@ -70,6 +72,7 @@ func (h *header) drawHeader(
 	compact bool,
 	detailsOpen bool,
 	width int,
+	lspErrorCount int,
 	hyperCredits *int,
 	currentGoal *goal.Goal,
 ) {
@@ -94,10 +97,6 @@ func (h *header) drawHeader(
 	b.WriteString(h.compactLogo)
 
 	availDetailWidth := width - leftPadding - rightPadding - lipgloss.Width(b.String()) - minHeaderDiags - diagToDetailsSpacing
-	lspErrorCount := 0
-	for _, info := range h.com.Workspace.LSPGetStates() {
-		lspErrorCount += info.DiagnosticCount
-	}
 	details := renderHeaderDetails(
 		h.com,
 		session,
@@ -161,7 +160,7 @@ func renderHeaderDetails(
 	}
 
 	if com.IsHyper() && hyperCredits != nil {
-		hc := t.Header.Hypercredit.Render(styles.HypercreditIcon) + " " + t.Header.Percentage.Render(common.FormatCredits(*hyperCredits))
+		hc := t.Header.HypercreditIcon.Render(styles.HypercreditIcon) + " " + t.Header.Percentage.Render(common.FormatCredits(*hyperCredits))
 		parts = append(parts, hc)
 	}
 

@@ -11,7 +11,6 @@ import (
 
 	"github.com/zeebo/xxh3"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/lucasb-eyer/go-colorful"
 
@@ -52,7 +51,6 @@ const (
 var (
 	defaultGradColorA = color.RGBA{R: 0xff, G: 0, B: 0, A: 0xff}
 	defaultGradColorB = color.RGBA{R: 0, G: 0, B: 0xff, A: 0xff}
-	defaultLabelColor = color.RGBA{R: 0xcc, G: 0xcc, B: 0xcc, A: 0xff}
 )
 
 var (
@@ -60,8 +58,8 @@ var (
 	ellipsisFrames = []string{".", "..", "...", ""}
 )
 
-// Internal ID management. Used during animating to ensure that frame messages
-// are received only by spinner components that sent them.
+// Internal ID management. The ID seeds the deterministic birth schedule so
+// two spinners built from the same settings do not animate in lockstep.
 var lastID atomic.Int64
 
 func nextID() int {
@@ -83,13 +81,17 @@ var animCacheMap = csync.NewMap[string, *animCache]()
 // settingsHash creates a hash key for the settings to use for caching
 func settingsHash(opts Settings) string {
 	h := xxh3.New()
-	fmt.Fprintf(h, "%d-%s-%v-%v-%v-%t",
-		opts.Size, opts.Label, opts.LabelColor, opts.GradColorA, opts.GradColorB, opts.CycleColors)
+	fmt.Fprintf(h, "%d-%s-%v-%v-%v-%t-%v",
+		opts.Size, opts.Label, opts.LabelColor, opts.GradColorA, opts.GradColorB, opts.CycleColors, opts.SuffixColor)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// StepMsg is a message type used to trigger the next step in the animation.
-type StepMsg struct{ ID string }
+// FrameInterval returns how long each animation frame stays on screen. The
+// UI drives every Anim from one clock ticking at this interval; Anim
+// instances never schedule themselves.
+func FrameInterval() time.Duration {
+	return time.Second / time.Duration(fps)
+}
 
 // Settings defines settings for the animation.
 type Settings struct {
@@ -100,6 +102,20 @@ type Settings struct {
 	GradColorA  color.Color
 	GradColorB  color.Color
 	CycleColors bool
+
+	// NoScramble disables the scrambled rune animation. The cycling
+	// character region is removed entirely so only the label and its
+	// animated ellipsis are visible. Useful for non-LLM contexts where
+	// scrambled glyphs imply "thinking" rather than "running".
+	NoScramble bool
+
+	// Suffix is an optional function that returns a dynamic suffix string
+	// to render after the label and ellipsis. Called on every Render().
+	Suffix func() string
+
+	// SuffixColor is the color used to render the suffix text.
+	// Falls back to LabelColor if unset.
+	SuffixColor color.Color
 }
 
 // Default settings.
@@ -117,10 +133,12 @@ type Anim struct {
 	initialized      atomic.Bool
 	cyclingFrames    [][]string           // frames for the cycling characters
 	step             atomic.Int64         // current main frame step (wraps)
-	framesSinceStart atomic.Int64         // total Animate ticks (does not wrap)
+	framesSinceStart atomic.Int64         // total Advance frames (does not wrap)
 	ellipsisStep     atomic.Int64         // current ellipsis frame step
 	ellipsisFrames   *csync.Slice[string] // ellipsis animation frames
 	id               string
+	suffix           func() string
+	suffixColor      color.Color
 }
 
 // New creates a new Anim instance with the specified width and label.
@@ -136,17 +154,37 @@ func New(opts Settings) *Anim {
 	if colorIsUnset(opts.GradColorB) {
 		opts.GradColorB = defaultGradColorB
 	}
-	if colorIsUnset(opts.LabelColor) {
-		opts.LabelColor = defaultLabelColor
-	}
+	// A nil LabelColor means "use the terminal default foreground".
+	// No fallback is applied so non-interactive callers can opt out
+	// of explicit coloring.
 
 	if opts.ID != "" {
 		a.id = opts.ID
 	} else {
 		a.id = fmt.Sprintf("%d", nextID())
 	}
-	a.cyclingCharWidth = opts.Size
+	if opts.NoScramble {
+		a.cyclingCharWidth = 0
+	} else {
+		a.cyclingCharWidth = opts.Size
+	}
 	a.labelColor = opts.LabelColor
+
+	// Store the suffix function if provided.
+	if opts.Suffix != nil {
+		a.suffix = opts.Suffix
+	}
+	if opts.SuffixColor != nil {
+		a.suffixColor = opts.SuffixColor
+	} else {
+		a.suffixColor = opts.LabelColor
+	}
+
+	// NoScramble means no cycling chars and no birth animation. Mark as
+	// initialized immediately so the label renders without a fade-in.
+	if opts.NoScramble {
+		a.initialized.Store(true)
+	}
 
 	// Check cache first
 	cacheKey := settingsHash(opts)
@@ -164,10 +202,14 @@ func New(opts Settings) *Anim {
 		// Generate new values and cache them
 		a.labelWidth = lipgloss.Width(opts.Label)
 
-		// Total width of anim, in cells.
-		a.width = opts.Size
+		// Total width of anim, in cells. When NoScramble is set there
+		// are no cycling chars so the label gap is unnecessary.
+		a.width = a.cyclingCharWidth
 		if opts.Label != "" {
-			a.width += labelGapWidth + lipgloss.Width(opts.Label)
+			if a.cyclingCharWidth > 0 {
+				a.width += labelGapWidth
+			}
+			a.width += lipgloss.Width(opts.Label)
 		}
 
 		// Render the label
@@ -282,10 +324,13 @@ func New(opts Settings) *Anim {
 func (a *Anim) SetLabel(newLabel string) {
 	a.labelWidth = lipgloss.Width(newLabel)
 
-	// Update total width
+	// Update total width. Skip the label gap when there are no cycling chars.
 	a.width = a.cyclingCharWidth
 	if newLabel != "" {
-		a.width += labelGapWidth + a.labelWidth
+		if a.cyclingCharWidth > 0 {
+			a.width += labelGapWidth
+		}
+		a.width += a.labelWidth
 	}
 
 	// Re-render the label
@@ -337,17 +382,10 @@ func (a *Anim) Width() (w int) {
 	return w
 }
 
-// Start starts the animation.
-func (a *Anim) Start() tea.Cmd {
-	return a.Step()
-}
-
-// Animate advances the animation to the next step.
-func (a *Anim) Animate(msg StepMsg) tea.Cmd {
-	if msg.ID != a.id {
-		return nil
-	}
-
+// Advance moves the animation forward by one frame. It is called by the
+// UI's shared animation clock for every visible spinner; the Anim itself
+// never schedules ticks.
+func (a *Anim) Advance() bool {
 	step := a.step.Add(1)
 	if int(step) >= len(a.cyclingFrames) {
 		a.step.Store(0)
@@ -363,7 +401,7 @@ func (a *Anim) Animate(msg StepMsg) tea.Cmd {
 	} else if !a.initialized.Load() && int(frames) >= maxBirthSteps {
 		a.initialized.Store(true)
 	}
-	return a.Step()
+	return true
 }
 
 // Render renders the current state of the animation.
@@ -379,33 +417,48 @@ func (a *Anim) Render() string {
 		case i < a.cyclingCharWidth:
 			// Render a cycling character.
 			b.WriteString(a.cyclingFrames[step][i])
-		case i == a.cyclingCharWidth:
-			// Render label gap.
+		case i == a.cyclingCharWidth && a.cyclingCharWidth > 0:
+			// Render label gap (only when there are cycling chars).
 			b.WriteString(labelGap)
-		case i > a.cyclingCharWidth:
-			// Label.
-			if labelChar, ok := a.label.Get(i - a.cyclingCharWidth - labelGapWidth); ok {
+		default:
+			// Label. Offset past cycling chars and gap (if any).
+			offset := a.cyclingCharWidth
+			if a.cyclingCharWidth > 0 {
+				offset += labelGapWidth
+			}
+			if labelChar, ok := a.label.Get(i - offset); ok {
 				b.WriteString(labelChar)
 			}
 		}
 	}
 	// Render animated ellipsis at the end of the label if all characters
-	// have been initialized.
+	// have been initialized. Skip when a suffix is active to avoid visual
+	// competition between the animated dots and the timer.
 	if a.initialized.Load() && a.labelWidth > 0 {
-		ellipsisStep := int(a.ellipsisStep.Load())
-		if ellipsisFrame, ok := a.ellipsisFrames.Get(ellipsisStep / ellipsisAnimSpeed); ok {
-			b.WriteString(ellipsisFrame)
+		showEllipsis := true
+		if a.suffix != nil {
+			if s := a.suffix(); s != "" {
+				showEllipsis = false
+			}
+		}
+		if showEllipsis {
+			ellipsisStep := int(a.ellipsisStep.Load())
+			if ellipsisFrame, ok := a.ellipsisFrames.Get(ellipsisStep / ellipsisAnimSpeed); ok {
+				b.WriteString(ellipsisFrame)
+			}
+		}
+	}
+
+	// Render optional suffix (e.g., elapsed time).
+	if a.suffix != nil {
+		suffixStr := a.suffix()
+		if suffixStr != "" {
+			b.WriteString(" ")
+			b.WriteString(lipgloss.NewStyle().Foreground(a.suffixColor).Render(suffixStr))
 		}
 	}
 
 	return b.String()
-}
-
-// Step is a command that triggers the next step in the animation.
-func (a *Anim) Step() tea.Cmd {
-	return tea.Tick(time.Second/time.Duration(fps), func(t time.Time) tea.Msg {
-		return StepMsg{ID: a.id}
-	})
 }
 
 // makeGradientRamp() returns a slice of colors blended between the given keys.

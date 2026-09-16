@@ -11,10 +11,10 @@ import (
 )
 
 type DBTX interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
 	PrepareContext(context.Context, string) (*sql.Stmt, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
 }
 
 func New(db DBTX) *Queries {
@@ -75,6 +75,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getHourDayHeatmapStmt, err = db.PrepareContext(ctx, getHourDayHeatmap); err != nil {
 		return nil, fmt.Errorf("error preparing query GetHourDayHeatmap: %w", err)
 	}
+	if q.getLastAssistantMessageBySessionStmt, err = db.PrepareContext(ctx, getLastAssistantMessageBySession); err != nil {
+		return nil, fmt.Errorf("error preparing query GetLastAssistantMessageBySession: %w", err)
+	}
 	if q.getLastSessionStmt, err = db.PrepareContext(ctx, getLastSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetLastSession: %w", err)
 	}
@@ -119,6 +122,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listMessagesBySessionStmt, err = db.PrepareContext(ctx, listMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySession: %w", err)
+	}
+	if q.listMessagesBySessionFromSummaryStmt, err = db.PrepareContext(ctx, listMessagesBySessionFromSummary); err != nil {
+		return nil, fmt.Errorf("error preparing query ListMessagesBySessionFromSummary: %w", err)
 	}
 	if q.listNewFilesStmt, err = db.PrepareContext(ctx, listNewFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListNewFiles: %w", err)
@@ -240,6 +246,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getHourDayHeatmapStmt: %w", cerr)
 		}
 	}
+	if q.getLastAssistantMessageBySessionStmt != nil {
+		if cerr := q.getLastAssistantMessageBySessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getLastAssistantMessageBySessionStmt: %w", cerr)
+		}
+	}
 	if q.getLastSessionStmt != nil {
 		if cerr := q.getLastSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getLastSessionStmt: %w", cerr)
@@ -313,6 +324,11 @@ func (q *Queries) Close() error {
 	if q.listMessagesBySessionStmt != nil {
 		if cerr := q.listMessagesBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listMessagesBySessionStmt: %w", cerr)
+		}
+	}
+	if q.listMessagesBySessionFromSummaryStmt != nil {
+		if cerr := q.listMessagesBySessionFromSummaryStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listMessagesBySessionFromSummaryStmt: %w", cerr)
 		}
 	}
 	if q.listNewFilesStmt != nil {
@@ -402,97 +418,101 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 }
 
 type Queries struct {
-	db                             DBTX
-	tx                             *sql.Tx
-	accumulateActiveTimeStmt       *sql.Stmt
-	createFileStmt                 *sql.Stmt
-	createMessageStmt              *sql.Stmt
-	createGoalStmt                 *sql.Stmt
-	createSessionStmt              *sql.Stmt
-	deleteFileStmt                 *sql.Stmt
-	deleteGoalStmt                 *sql.Stmt
-	deleteMessageStmt              *sql.Stmt
-	deleteSessionStmt              *sql.Stmt
-	deleteSessionFilesStmt         *sql.Stmt
-	deleteSessionMessagesStmt      *sql.Stmt
-	getAverageResponseTimeStmt     *sql.Stmt
-	getFileStmt                    *sql.Stmt
-	getFileByPathAndSessionStmt    *sql.Stmt
-	getFileReadStmt                *sql.Stmt
-	getGoalBySessionIDStmt           *sql.Stmt
-	getHourDayHeatmapStmt          *sql.Stmt
-	getLastSessionStmt             *sql.Stmt
-	getMessageStmt                 *sql.Stmt
-	getRecentActivityStmt          *sql.Stmt
-	getSessionByIDStmt             *sql.Stmt
-	getToolUsageStmt               *sql.Stmt
-	getTotalStatsStmt              *sql.Stmt
-	getUsageByDayStmt              *sql.Stmt
-	getUsageByDayOfWeekStmt        *sql.Stmt
-	getUsageByHourStmt             *sql.Stmt
-	getUsageByModelStmt            *sql.Stmt
-	listAllUserMessagesStmt        *sql.Stmt
-	listFilesByPathStmt            *sql.Stmt
-	listFilesBySessionStmt         *sql.Stmt
-	listLatestSessionFilesStmt     *sql.Stmt
-	listMessagesBySessionStmt      *sql.Stmt
-	listNewFilesStmt               *sql.Stmt
-	listSessionReadFilesStmt       *sql.Stmt
-	listSessionsStmt               *sql.Stmt
-	listUserMessagesBySessionStmt  *sql.Stmt
-	recordFileReadStmt             *sql.Stmt
-	renameSessionStmt              *sql.Stmt
-	updateGoalStatusStmt           *sql.Stmt
-	updateMessageStmt              *sql.Stmt
-	updateSessionStmt              *sql.Stmt
-	updateSessionTitleAndUsageStmt *sql.Stmt
+	db                                   DBTX
+	tx                                   *sql.Tx
+	accumulateActiveTimeStmt             *sql.Stmt
+	createFileStmt                       *sql.Stmt
+	createMessageStmt                    *sql.Stmt
+	createGoalStmt                       *sql.Stmt
+	createSessionStmt                    *sql.Stmt
+	deleteFileStmt                       *sql.Stmt
+	deleteGoalStmt                       *sql.Stmt
+	deleteMessageStmt                    *sql.Stmt
+	deleteSessionStmt                    *sql.Stmt
+	deleteSessionFilesStmt               *sql.Stmt
+	deleteSessionMessagesStmt            *sql.Stmt
+	getAverageResponseTimeStmt           *sql.Stmt
+	getFileStmt                          *sql.Stmt
+	getFileByPathAndSessionStmt          *sql.Stmt
+	getFileReadStmt                      *sql.Stmt
+	getGoalBySessionIDStmt               *sql.Stmt
+	getHourDayHeatmapStmt                *sql.Stmt
+	getLastAssistantMessageBySessionStmt *sql.Stmt
+	getLastSessionStmt                   *sql.Stmt
+	getMessageStmt                       *sql.Stmt
+	getRecentActivityStmt                *sql.Stmt
+	getSessionByIDStmt                   *sql.Stmt
+	getToolUsageStmt                     *sql.Stmt
+	getTotalStatsStmt                    *sql.Stmt
+	getUsageByDayStmt                    *sql.Stmt
+	getUsageByDayOfWeekStmt              *sql.Stmt
+	getUsageByHourStmt                   *sql.Stmt
+	getUsageByModelStmt                  *sql.Stmt
+	listAllUserMessagesStmt              *sql.Stmt
+	listFilesByPathStmt                  *sql.Stmt
+	listFilesBySessionStmt               *sql.Stmt
+	listLatestSessionFilesStmt           *sql.Stmt
+	listMessagesBySessionStmt            *sql.Stmt
+	listMessagesBySessionFromSummaryStmt *sql.Stmt
+	listNewFilesStmt                     *sql.Stmt
+	listSessionReadFilesStmt             *sql.Stmt
+	listSessionsStmt                     *sql.Stmt
+	listUserMessagesBySessionStmt        *sql.Stmt
+	recordFileReadStmt                   *sql.Stmt
+	renameSessionStmt                    *sql.Stmt
+	updateGoalStatusStmt                 *sql.Stmt
+	updateMessageStmt                    *sql.Stmt
+	updateSessionStmt                    *sql.Stmt
+	updateSessionTitleAndUsageStmt       *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                             tx,
-		tx:                             tx,
-		accumulateActiveTimeStmt:       q.accumulateActiveTimeStmt,
-		createFileStmt:                 q.createFileStmt,
-		createMessageStmt:              q.createMessageStmt,
-		createGoalStmt:                 q.createGoalStmt,
-		createSessionStmt:              q.createSessionStmt,
-		deleteFileStmt:                 q.deleteFileStmt,
-		deleteGoalStmt:                 q.deleteGoalStmt,
-		deleteMessageStmt:              q.deleteMessageStmt,
-		deleteSessionStmt:              q.deleteSessionStmt,
-		deleteSessionFilesStmt:         q.deleteSessionFilesStmt,
-		deleteSessionMessagesStmt:      q.deleteSessionMessagesStmt,
-		getAverageResponseTimeStmt:     q.getAverageResponseTimeStmt,
-		getFileStmt:                    q.getFileStmt,
-		getFileByPathAndSessionStmt:    q.getFileByPathAndSessionStmt,
-		getFileReadStmt:                q.getFileReadStmt,
-		getGoalBySessionIDStmt:           q.getGoalBySessionIDStmt,
-		getHourDayHeatmapStmt:          q.getHourDayHeatmapStmt,
-		getLastSessionStmt:             q.getLastSessionStmt,
-		getMessageStmt:                 q.getMessageStmt,
-		getRecentActivityStmt:          q.getRecentActivityStmt,
-		getSessionByIDStmt:             q.getSessionByIDStmt,
-		getToolUsageStmt:               q.getToolUsageStmt,
-		getTotalStatsStmt:              q.getTotalStatsStmt,
-		getUsageByDayStmt:              q.getUsageByDayStmt,
-		getUsageByDayOfWeekStmt:        q.getUsageByDayOfWeekStmt,
-		getUsageByHourStmt:             q.getUsageByHourStmt,
-		getUsageByModelStmt:            q.getUsageByModelStmt,
-		listAllUserMessagesStmt:        q.listAllUserMessagesStmt,
-		listFilesByPathStmt:            q.listFilesByPathStmt,
-		listFilesBySessionStmt:         q.listFilesBySessionStmt,
-		listLatestSessionFilesStmt:     q.listLatestSessionFilesStmt,
-		listMessagesBySessionStmt:      q.listMessagesBySessionStmt,
-		listNewFilesStmt:               q.listNewFilesStmt,
-		listSessionReadFilesStmt:       q.listSessionReadFilesStmt,
-		listSessionsStmt:               q.listSessionsStmt,
-		listUserMessagesBySessionStmt:  q.listUserMessagesBySessionStmt,
-		recordFileReadStmt:             q.recordFileReadStmt,
-		renameSessionStmt:              q.renameSessionStmt,
-		updateGoalStatusStmt:           q.updateGoalStatusStmt,
-		updateMessageStmt:              q.updateMessageStmt,
-		updateSessionStmt:              q.updateSessionStmt,
-		updateSessionTitleAndUsageStmt: q.updateSessionTitleAndUsageStmt,
+		db:                                   tx,
+		tx:                                   tx,
+		accumulateActiveTimeStmt:             q.accumulateActiveTimeStmt,
+		createFileStmt:                       q.createFileStmt,
+		createMessageStmt:                    q.createMessageStmt,
+		createGoalStmt:                       q.createGoalStmt,
+		createSessionStmt:                    q.createSessionStmt,
+		deleteFileStmt:                       q.deleteFileStmt,
+		deleteGoalStmt:                       q.deleteGoalStmt,
+		deleteMessageStmt:                    q.deleteMessageStmt,
+		deleteSessionStmt:                    q.deleteSessionStmt,
+		deleteSessionFilesStmt:               q.deleteSessionFilesStmt,
+		deleteSessionMessagesStmt:            q.deleteSessionMessagesStmt,
+		getAverageResponseTimeStmt:           q.getAverageResponseTimeStmt,
+		getFileStmt:                          q.getFileStmt,
+		getFileByPathAndSessionStmt:          q.getFileByPathAndSessionStmt,
+		getFileReadStmt:                      q.getFileReadStmt,
+		getGoalBySessionIDStmt:               q.getGoalBySessionIDStmt,
+		getHourDayHeatmapStmt:                q.getHourDayHeatmapStmt,
+		getLastAssistantMessageBySessionStmt: q.getLastAssistantMessageBySessionStmt,
+		getLastSessionStmt:                   q.getLastSessionStmt,
+		getMessageStmt:                       q.getMessageStmt,
+		getRecentActivityStmt:                q.getRecentActivityStmt,
+		getSessionByIDStmt:                   q.getSessionByIDStmt,
+		getToolUsageStmt:                     q.getToolUsageStmt,
+		getTotalStatsStmt:                    q.getTotalStatsStmt,
+		getUsageByDayStmt:                    q.getUsageByDayStmt,
+		getUsageByDayOfWeekStmt:              q.getUsageByDayOfWeekStmt,
+		getUsageByHourStmt:                   q.getUsageByHourStmt,
+		getUsageByModelStmt:                  q.getUsageByModelStmt,
+		listAllUserMessagesStmt:              q.listAllUserMessagesStmt,
+		listFilesByPathStmt:                  q.listFilesByPathStmt,
+		listFilesBySessionStmt:               q.listFilesBySessionStmt,
+		listLatestSessionFilesStmt:           q.listLatestSessionFilesStmt,
+		listMessagesBySessionStmt:            q.listMessagesBySessionStmt,
+		listMessagesBySessionFromSummaryStmt: q.listMessagesBySessionFromSummaryStmt,
+		listNewFilesStmt:                     q.listNewFilesStmt,
+		listSessionReadFilesStmt:             q.listSessionReadFilesStmt,
+		listSessionsStmt:                     q.listSessionsStmt,
+		listUserMessagesBySessionStmt:        q.listUserMessagesBySessionStmt,
+		recordFileReadStmt:                   q.recordFileReadStmt,
+		renameSessionStmt:                    q.renameSessionStmt,
+		updateGoalStatusStmt:                 q.updateGoalStatusStmt,
+		updateMessageStmt:                    q.updateMessageStmt,
+		updateSessionStmt:                    q.updateSessionStmt,
+		updateSessionTitleAndUsageStmt:       q.updateSessionTitleAndUsageStmt,
 	}
 }

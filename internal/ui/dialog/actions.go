@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -57,6 +58,7 @@ type (
 		Style string
 	}
 	ActionToggleTransparentBackground struct{}
+	ActionToggleMouseSupport          struct{}
 	ActionInitializeProject           struct{}
 	ActionSummarize                   struct {
 		SessionID string
@@ -108,6 +110,29 @@ type (
 	ActionGoalResume struct{}
 )
 
+// Messages for MCP OAuth authentication dialog.
+type (
+	// ActionMCPAuthStarted is sent when the user approves authentication
+	// for an MCP server. The UI should initiate the actual auth flow
+	// using the provided context, which the dialog will cancel if the
+	// user closes it.
+	ActionMCPAuthStarted struct {
+		Name string
+		Ctx  context.Context
+	}
+
+	// ActionMCPAuthComplete is sent when MCP authentication succeeds.
+	ActionMCPAuthComplete struct {
+		Name string
+	}
+
+	// ActionMCPAuthErrored is sent when MCP authentication fails.
+	ActionMCPAuthErrored struct {
+		Name  string
+		Error error
+	}
+)
+
 // Messages for API key input dialog.
 type (
 	ActionChangeAPIKeyState struct {
@@ -135,6 +160,23 @@ type (
 	// ActionOAuthErrored is sent when the device flow encounters an error.
 	ActionOAuthErrored struct {
 		Error error
+	}
+
+	// ActionCloseOAuth closes the OAuth dialog and runs the given cleanup
+	// command, cancelling any in-flight authorization. It exists so a
+	// dismissed dialog does not leave a poller or loopback listener
+	// running in the background.
+	ActionCloseOAuth struct {
+		Cmd tea.Cmd
+	}
+
+	// ActionSelectAuthMethod is sent when the user picks how to
+	// authenticate a provider that supports both OAuth and API keys.
+	ActionSelectAuthMethod struct {
+		Provider  catwalk.Provider
+		Model     config.SelectedModel
+		ModelType config.SelectedModelType
+		UseOAuth  bool
 	}
 )
 

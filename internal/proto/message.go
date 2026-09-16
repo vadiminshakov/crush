@@ -21,14 +21,19 @@ type CreateMessageParams struct {
 
 // Message represents a message in the proto layer.
 type Message struct {
-	ID        string        `json:"id"`
-	Role      MessageRole   `json:"role"`
-	SessionID string        `json:"session_id"`
-	Parts     []ContentPart `json:"parts"`
-	Model     string        `json:"model"`
-	Provider  string        `json:"provider"`
-	CreatedAt int64         `json:"created_at"`
-	UpdatedAt int64         `json:"updated_at"`
+	ID                      string        `json:"id"`
+	Role                    MessageRole   `json:"role"`
+	SessionID               string        `json:"session_id"`
+	Parts                   []ContentPart `json:"parts"`
+	Model                   string        `json:"model"`
+	Provider                string        `json:"provider"`
+	PrismModelID            string        `json:"prism_model_id,omitempty"`
+	PrismModelName          string        `json:"prism_model_name,omitempty"`
+	PrismHypercreditSavings *float64      `json:"prism_hypercredit_savings,omitempty"`
+	PrismDollarSavings      *float64      `json:"prism_dollar_savings,omitempty"`
+	CreatedAt               int64         `json:"created_at"`
+	UpdatedAt               int64         `json:"updated_at"`
+	IsSummaryMessage        bool          `json:"is_summary_message,omitempty"`
 }
 
 // MessageRole represents the role of a message sender.
@@ -56,12 +61,13 @@ func (r *MessageRole) UnmarshalText(data []byte) error {
 type FinishReason string
 
 const (
-	FinishReasonEndTurn   FinishReason = "end_turn"
-	FinishReasonMaxTokens FinishReason = "max_tokens"
-	FinishReasonToolUse   FinishReason = "tool_use"
-	FinishReasonCanceled  FinishReason = "canceled"
-	FinishReasonError     FinishReason = "error"
-	FinishReasonUnknown   FinishReason = "unknown"
+	FinishReasonEndTurn       FinishReason = "end_turn"
+	FinishReasonMaxTokens     FinishReason = "max_tokens"
+	FinishReasonToolUse       FinishReason = "tool_use"
+	FinishReasonCanceled      FinishReason = "canceled"
+	FinishReasonError         FinishReason = "error"
+	FinishReasonContentFilter FinishReason = "content_filter"
+	FinishReasonUnknown       FinishReason = "unknown"
 )
 
 // MarshalText implements the [encoding.TextMarshaler] interface.
@@ -97,7 +103,8 @@ func (ReasoningContent) isPart() {}
 
 // TextContent represents a text part of a message.
 type TextContent struct {
-	Text string `json:"text"`
+	Text   string `json:"text"`
+	Hidden bool   `json:"hidden,omitempty"`
 }
 
 // String returns the text content as a string.
@@ -171,6 +178,15 @@ type Finish struct {
 }
 
 func (Finish) isPart() {}
+
+// ShellCommand stores a bang-mode shell command and its output.
+type ShellCommand struct {
+	Command  string `json:"command"`
+	Output   string `json:"output"`
+	ExitCode int    `json:"exit_code"`
+}
+
+func (ShellCommand) isPart() {}
 
 // MarshalJSON implements the [json.Marshaler] interface.
 func (m Message) MarshalJSON() ([]byte, error) {
@@ -316,7 +332,7 @@ func (m *Message) AppendContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(TextContent); ok {
-			m.Parts[i] = TextContent{Text: c.Text + delta}
+			m.Parts[i] = TextContent{Text: c.Text + delta, Hidden: c.Hidden}
 			found = true
 		}
 	}
@@ -495,13 +511,14 @@ func (m *Message) AddBinary(mimeType string, data []byte) {
 type partType string
 
 const (
-	reasoningType  partType = "reasoning"
-	textType       partType = "text"
-	imageURLType   partType = "image_url"
-	binaryType     partType = "binary"
-	toolCallType   partType = "tool_call"
-	toolResultType partType = "tool_result"
-	finishType     partType = "finish"
+	reasoningType    partType = "reasoning"
+	textType         partType = "text"
+	imageURLType     partType = "image_url"
+	binaryType       partType = "binary"
+	toolCallType     partType = "tool_call"
+	toolResultType   partType = "tool_result"
+	finishType       partType = "finish"
+	shellCommandType partType = "shell_command"
 )
 
 type partWrapper struct {
@@ -531,6 +548,8 @@ func MarshalParts(parts []ContentPart) ([]byte, error) {
 			typ = toolResultType
 		case Finish:
 			typ = finishType
+		case ShellCommand:
+			typ = shellCommandType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -602,6 +621,12 @@ func UnmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case finishType:
 			part := Finish{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case shellCommandType:
+			part := ShellCommand{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

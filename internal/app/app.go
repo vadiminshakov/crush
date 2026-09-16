@@ -17,22 +17,24 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/clipboard"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/format"
 	"github.com/charmbracelet/crush/internal/goal"
+	"github.com/charmbracelet/crush/internal/herdr"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/skills"
@@ -41,7 +43,6 @@ import (
 	"github.com/charmbracelet/crush/internal/update"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/exp/charmtone"
 	"github.com/charmbracelet/x/term"
 )
 
@@ -57,6 +58,7 @@ type App struct {
 	Messages    message.Service
 	History     history.Service
 	Permissions permission.Service
+	Questions   question.Service
 	FileTracker filetracker.Service
 	GoalService goal.Service
 	GoalRuntime *goal.Runtime
@@ -85,6 +87,10 @@ type App struct {
 	// drive their exit on a deterministic, payload-bearing event
 	// instead of guessing from message finish parts.
 	runCompletions *pubsub.Broker[notify.RunComplete]
+
+	// herdrClient reports agent state to herdr when running inside
+	// a herdr-managed pane. Nil when not in a herdr environment.
+	herdrClient *herdr.Client
 }
 
 // New initializes a new application instance. skillsMgr carries the
@@ -109,6 +115,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		Messages:    messages,
 		History:     files,
 		Permissions: permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools),
+		Questions:   question.NewService(),
 		FileTracker: filetracker.NewService(q),
 		GoalService: goalService,
 		LSPManager:  lsp.NewManager(store),
@@ -127,10 +134,29 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 
 	app.setupEvents()
 
+	// Initialize clipboard support. This is best-effort; if it fails
+	// (e.g., headless environment), clipboard operations will return nil.
+	if err := clipboard.Init(); err != nil {
+		slog.Warn("Clipboard initialization failed", "error", err)
+	}
+
 	// Check for updates in the background.
 	go app.checkForUpdates(ctx)
 
+	// Arm initialization synchronously before launching it so WaitForInit
+	// blocks for the in-flight init instead of racing the goroutine and
+	// returning before any MCP tools register.
+	mcp.ArmInit()
 	go mcp.Initialize(ctx, app.Permissions, store)
+
+	// Start herdr integration when running inside a herdr pane.
+	app.herdrClient = herdr.Init()
+	herdr.BridgeLocal(ctx, app.herdrClient, herdr.BridgeSources{
+		PermRequests:      app.Permissions,
+		PermNotifications: app.Permissions,
+		RunCompletions:    app.runCompletions,
+		Messages:          app.Messages,
+	})
 
 	// Release the shared database connection on shutdown. The pool
 	// closes the underlying *sql.DB when the last reference is released.
@@ -159,7 +185,10 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		client.SetDiagnosticsCallback(updateLSPDiagnostics)
 		updateLSPState(name, client.GetServerState(), nil, client, 0)
 	})
-	go app.LSPManager.TrackConfigured()
+
+	// TrackConfigured must run after SetCallback so the callback is already
+	// installed when configured-but-not-yet-started LSPs are announced.
+	go app.LSPManager.TrackConfigured(ctx)
 
 	return app, nil
 }
@@ -188,6 +217,23 @@ func (app *App) SendEvent(msg tea.Msg) {
 // AgentNotifications returns the broker for agent notification events.
 func (app *App) AgentNotifications() *pubsub.Broker[notify.Notification] {
 	return app.agentNotifications
+}
+
+// RunCompletions returns the broker for the authoritative per-run
+// terminal RunComplete events. The dispatcher (backend.runAgent) uses
+// it to emit a reliable terminal event when a run fails before the
+// coordinator could publish one of its own.
+func (app *App) RunCompletions() *pubsub.Broker[notify.RunComplete] {
+	return app.runCompletions
+}
+
+// ReportCurrentSession tells herdr which session the user is now
+// viewing so it can persist a resumable reference for the pane. Safe
+// to call when not running inside a herdr pane; the underlying client
+// is nil-safe. Call this whenever the active session changes (load,
+// new, or select).
+func (app *App) ReportCurrentSession(sessionID string) {
+	app.herdrClient.SetSessionID(sessionID)
 }
 
 // resolveSession resolves which session to use for a non-interactive run
@@ -223,8 +269,13 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 
 // RunNonInteractive runs the application in non-interactive mode with the
 // given prompt, printing to stdout.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel string, hideSpinner bool, continueSessionID string, useLast bool) error {
+func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, reasoningEffort string, hideSpinner bool, continueSessionID string, useLast bool) error {
 	slog.Info("Running in non-interactive mode")
+
+	// Re-initialize the coder agent without interactive-only tools.
+	if err := app.InitCoderAgentNonInteractive(ctx); err != nil {
+		return fmt.Errorf("failed to reinitialize agent for non-interactive mode: %w", err)
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -235,37 +286,32 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		}
 	}
 
+	// The reasoning effort applies to the model that will actually run.
+	// On a continued session without an explicit model override, the
+	// model is resolved later from the session's last assistant message,
+	// so the override is applied after that restore instead.
+	deferredEffort := (continueSessionID != "" || useLast) && largeModel == "" && smallModel == ""
+	if reasoningEffort != "" && !deferredEffort {
+		if err := app.overrideReasoningEffort(ctx, reasoningEffort); err != nil {
+			return err
+		}
+	}
+
 	var (
 		spinner   *format.Spinner
-		stdoutTTY bool
 		stderrTTY bool
-		stdinTTY  bool
 		progress  bool
 	)
 
-	if f, ok := output.(*os.File); ok {
-		stdoutTTY = term.IsTerminal(f.Fd())
-	}
 	stderrTTY = term.IsTerminal(os.Stderr.Fd())
-	stdinTTY = term.IsTerminal(os.Stdin.Fd())
 	progress = app.config.Config().Options.Progress == nil || *app.config.Config().Options.Progress
 
 	if !hideSpinner && stderrTTY {
 		t := styles.ThemeForProvider(app.config.Config().Models[config.SelectedModelTypeLarge].Provider)
 
-		// Detect background color to set the appropriate color for the
-		// spinner's 'Generating...' text. Without this, that text would be
-		// unreadable in light terminals.
-		hasDarkBG := true
-		if f, ok := output.(*os.File); ok && stdinTTY && stdoutTTY {
-			hasDarkBG = lipgloss.HasDarkBackground(os.Stdin, f)
-		}
-		defaultFG := lipgloss.LightDark(hasDarkBG)(charmtone.Pepper, t.WorkingLabelColor)
-
 		spinner = format.NewSpinner(ctx, cancel, anim.Settings{
 			Size:        10,
 			Label:       "Generating",
-			LabelColor:  defaultFG,
 			GradColorA:  t.WorkingGradFromColor,
 			GradColorB:  t.WorkingGradToColor,
 			CycleColors: true,
@@ -281,8 +327,15 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		}
 	}
 
-	// Wait for MCP initialization to complete before reading MCP tools.
-	if err := mcp.WaitForInit(ctx); err != nil {
+	// Non-interactive runs get a single shot at the tool palette, so wait for
+	// MCP initialization to settle before reading MCP tools. The coordinator
+	// waits again for the same reason (it is the gate the client/server path
+	// goes through); doing it here too surfaces the failure before we create a
+	// session, and lets the UpdateModels below see every MCP tool. The wait is
+	// bounded so a server wedged mid-handshake cannot stall the one-shot run
+	// for its full connect timeout; past the budget the run proceeds without
+	// the unfinished servers' tools.
+	if err := mcp.WaitForInitBudget(ctx, mcp.InitWaitBudget); err != nil {
 		return fmt.Errorf("failed to wait for MCP initialization: %w", err)
 	}
 
@@ -298,13 +351,30 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 
 	if continueSessionID != "" || useLast {
 		slog.Info("Continuing session for non-interactive run", "session_id", sess.ID)
+		// If no explicit model override was requested, restore the
+		// model/provider from the last assistant message in the
+		// session, provided it is still available.
+		if largeModel == "" && smallModel == "" {
+			if err := app.restoreModelFromSession(ctx, sess.ID); err != nil {
+				slog.Warn("Failed to restore model from session", "error", err)
+			}
+		}
 	} else {
 		slog.Info("Created session for non-interactive run", "session_id", sess.ID)
+	}
+
+	if reasoningEffort != "" && deferredEffort {
+		if err := app.overrideReasoningEffort(ctx, reasoningEffort); err != nil {
+			return err
+		}
 	}
 
 	// Automatically approve all permission requests for this non-interactive
 	// session.
 	app.Permissions.AutoApproveSession(sess.ID)
+
+	// Report session identity to herdr.
+	app.ReportCurrentSession(sess.ID)
 
 	type response struct {
 		result *fantasy.AgentResult
@@ -399,6 +469,54 @@ func (app *App) UpdateAgentModel(ctx context.Context) error {
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
+// restoreModelFromSession reads the last assistant message in the
+// session and, if it used a different provider/model than the current
+// config, overrides the preferred model in-memory (non-persistent)
+// provided the provider/model is still available. This ensures that
+// continuing a session uses the same model that produced the last
+// response.
+func (app *App) restoreModelFromSession(ctx context.Context, sessionID string) error {
+	lastMsg, err := app.Messages.GetLastAssistantMessage(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("failed to get last assistant message: %w", err)
+	}
+	if lastMsg.Provider == "" || lastMsg.Model == "" {
+		return nil
+	}
+
+	cfg := app.config.Config()
+	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
+	if currentLarge.Provider == lastMsg.Provider && currentLarge.Model == lastMsg.Model {
+		return nil
+	}
+
+	if !cfg.IsModelAvailable(lastMsg.Provider, lastMsg.Model) {
+		slog.Debug("Skipping model restoration: provider/model not available",
+			"provider", lastMsg.Provider,
+			"model", lastMsg.Model)
+		return nil
+	}
+
+	app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
+		Provider: lastMsg.Provider,
+		Model:    lastMsg.Model,
+	})
+	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
+		smallModel := app.GetDefaultSmallModel(lastMsg.Provider)
+		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallModel)
+	}
+	if err := app.AgentCoordinator.UpdateModels(ctx); err != nil {
+		return fmt.Errorf("failed to update agent models: %w", err)
+	}
+	slog.Info("Restored model from session",
+		"provider", lastMsg.Provider,
+		"model", lastMsg.Model)
+	return nil
+}
+
 // overrideModelsForNonInteractive parses the model strings and temporarily
 // overrides the model configurations, then rebuilds the agent.
 // Format: "model-name" (searches all providers) or "provider/model-name".
@@ -423,10 +541,10 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel,
 		}
 		largeProviderID = found.provider
 		slog.Info("Overriding large model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.Config().Models[config.SelectedModelTypeLarge] = config.SelectedModel{
+		app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
-		}
+		})
 	}
 
 	// Override small model.
@@ -437,17 +555,39 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel,
 			return err
 		}
 		slog.Info("Overriding small model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.Config().Models[config.SelectedModelTypeSmall] = config.SelectedModel{
+		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
-		}
+		})
 
 	case largeModel != "":
 		// No small model specified, but large model was - use provider's default.
 		smallCfg := app.GetDefaultSmallModel(largeProviderID)
-		app.config.Config().Models[config.SelectedModelTypeSmall] = smallCfg
+		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallCfg)
 	}
 
+	return app.AgentCoordinator.UpdateModels(ctx)
+}
+
+// overrideReasoningEffort validates the requested reasoning effort against
+// the large model in effect for this run (which may have been overridden by
+// --model or restored from a continued session) and applies it as an
+// in-memory override.
+func (app *App) overrideReasoningEffort(ctx context.Context, reasoningEffort string) error {
+	cfg := app.config.Config()
+	selected, ok := cfg.Models[config.SelectedModelTypeLarge]
+	if !ok {
+		return fmt.Errorf("no large model selected; set one with the --model flag or 'model large'")
+	}
+	if err := cfg.ValidateReasoningEffort(selected.Provider, selected.Model, reasoningEffort); err != nil {
+		return err
+	}
+	selected.ReasoningEffort = reasoningEffort
+	slog.Info("Overriding reasoning effort for non-interactive run",
+		"provider", selected.Provider,
+		"model", selected.Model,
+		"reasoning_effort", reasoningEffort)
+	app.config.OverridePreferredModel(config.SelectedModelTypeLarge, selected)
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
@@ -480,6 +620,23 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 		return largeModelCfg
 	}
 
+	// A ChatGPT-authenticated OpenAI provider only serves the models the
+	// subscription grants, so the default small model must come from that
+	// catalog as well.
+	if providerID == string(catwalk.InferenceProviderOpenAI) && largeModelCfg.Provider == providerID {
+		if pc, ok := cfg.Providers.Get(providerID); ok && pc.OAuthToken != nil {
+			if small := chatGPTSmallModel(pc); small != nil {
+				return config.SelectedModel{
+					Provider:        providerID,
+					Model:           small.ID,
+					MaxTokens:       small.DefaultMaxTokens,
+					ReasoningEffort: small.DefaultReasoningEffort,
+				}
+			}
+			return largeModelCfg
+		}
+	}
+
 	slog.Info("Using provider default small model", "provider", providerID, "model", defaultSmallModelID)
 	return config.SelectedModel{
 		Provider:        providerID,
@@ -489,13 +646,31 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 	}
 }
 
+// chatGPTSmallModel picks a lightweight model from the ChatGPT catalog,
+// preferring a "mini" variant and falling back to the last entry (the
+// catalog lists heavier models first). Returns nil when the catalog is
+// empty.
+func chatGPTSmallModel(pc config.ProviderConfig) *catwalk.Model {
+	for i := range pc.ChatGPTModels {
+		if strings.Contains(pc.ChatGPTModels[i].ID, "mini") {
+			return &pc.ChatGPTModels[i]
+		}
+	}
+	if len(pc.ChatGPTModels) > 0 {
+		return &pc.ChatGPTModels[len(pc.ChatGPTModels)-1]
+	}
+	return nil
+}
+
 func (app *App) setupEvents() {
 	ctx, cancel := context.WithCancel(app.globalCtx)
 	app.eventsCtx = ctx
 	setupSubscriber(ctx, app.serviceEventsWG, "sessions", app.Sessions.Subscribe, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "messages", app.Messages.Subscribe, app.events)
-	setupSubscriber(ctx, app.serviceEventsWG, "permissions", app.Permissions.Subscribe, app.events)
-	setupSubscriber(ctx, app.serviceEventsWG, "permissions-notifications", app.Permissions.SubscribeNotifications, app.events)
+	setupSubscriberMustDeliver(ctx, app.serviceEventsWG, "permissions", app.Permissions.Subscribe, app.events)
+	setupSubscriberMustDeliver(ctx, app.serviceEventsWG, "permissions-notifications", app.Permissions.SubscribeNotifications, app.events)
+	setupSubscriberMustDeliver(ctx, app.serviceEventsWG, "question-batches", app.Questions.Subscribe, app.events)
+	setupSubscriberMustDeliver(ctx, app.serviceEventsWG, "question-notifications", app.Questions.SubscribeNotifications, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "history", app.History.Subscribe, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "goals", app.GoalService.Subscribe, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "agent-notifications", app.agentNotifications.Subscribe, app.events)
@@ -572,25 +747,36 @@ func setupSubscriberMustDeliver[T any](
 }
 
 func (app *App) InitCoderAgent(ctx context.Context) error {
+	return app.initCoderAgent(ctx, true)
+}
+
+// InitCoderAgentNonInteractive initializes the coder agent without
+// interactive-only tools (e.g. question).
+func (app *App) InitCoderAgentNonInteractive(ctx context.Context) error {
+	return app.initCoderAgent(ctx, false)
+}
+
+func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
 	var err error
-	app.AgentCoordinator, err = agent.NewCoordinator(
-		ctx,
-		app.config,
-		app.Sessions,
-		app.Messages,
-		app.Permissions,
-		app.History,
-		app.FileTracker,
-		app.GoalService,
-		app.LSPManager,
-		app.agentNotifications,
-		app.runCompletions,
-		app.Skills,
-	)
+	app.AgentCoordinator, err = agent.NewCoordinator(ctx, agent.CoordinatorOptions{
+		Config:      app.config,
+		Sessions:    app.Sessions,
+		Messages:    app.Messages,
+		Permissions: app.Permissions,
+		Questions:   app.Questions,
+		History:     app.History,
+		FileTracker: app.FileTracker,
+		GoalService: app.GoalService,
+		LSPManager:  app.LSPManager,
+		Notify:      app.agentNotifications,
+		RunComplete: app.runCompletions,
+		Skills:      app.Skills,
+		Interactive: interactive,
+	})
 	if err != nil {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
@@ -669,6 +855,9 @@ func (app *App) Shutdown() {
 	wg.Go(func() {
 		shell.GetBackgroundShellManager().KillAll(shutdownCtx)
 	})
+
+	// Close herdr client to stop its background writer.
+	app.herdrClient.Close()
 
 	// Shutdown all LSP clients.
 	wg.Go(func() {

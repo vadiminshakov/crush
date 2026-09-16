@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -123,6 +125,38 @@ func TestRunCompleteToProto_RoundTrip(t *testing.T) {
 	require.False(t, decoded.Payload.Cancelled)
 }
 
+// TestAgentErrorToProto_PreservesRunID verifies that an async agent
+// error notification carries its originating RunID (and SessionID)
+// through the SSE envelope. Without these correlators, `crush run`
+// cannot tell whether an error event belongs to its own run and
+// would abort on any unrelated workspace failure.
+func TestAgentErrorToProto_PreservesRunID(t *testing.T) {
+	t.Parallel()
+
+	src := pubsub.Event[notify.Notification]{
+		Type: pubsub.CreatedEvent,
+		Payload: notify.Notification{
+			SessionID: "S",
+			RunID:     "run-99",
+			Type:      notify.TypeAgentError,
+			Message:   "boom",
+		},
+	}
+
+	env := wrapEvent(src)
+	require.NotNil(t, env)
+	require.Equal(t, pubsub.PayloadTypeAgentEvent, env.Type)
+
+	var decoded pubsub.Event[proto.AgentEvent]
+	require.NoError(t, json.Unmarshal(env.Payload, &decoded))
+	require.Equal(t, proto.AgentEventTypeError, decoded.Payload.Type)
+	require.Equal(t, "S", decoded.Payload.SessionID)
+	require.Equal(t, "run-99", decoded.Payload.RunID,
+		"RunID must survive so observers can attribute the error to its run")
+	require.NotNil(t, decoded.Payload.Error)
+	require.Equal(t, "boom", decoded.Payload.Error.Error())
+}
+
 // TestRunCompleteToProto_Error verifies that error- and cancel-shaped
 // RunComplete events round-trip cleanly so clients can distinguish
 // "agent failed" (returns non-zero from `crush run`) from "agent
@@ -148,3 +182,95 @@ func TestRunCompleteToProto_Error(t *testing.T) {
 	require.Equal(t, "context canceled", decoded.Payload.Error)
 	require.True(t, decoded.Payload.Cancelled)
 }
+
+// TestUpdateAvailableMsgToProto_RoundTrip verifies that an
+// app.UpdateAvailableMsg — published directly (not wrapped in
+// pubsub.Event) by app.checkForUpdates — survives the SSE envelope
+// conversion. Without this, client/server mode silently drops update
+// notifications because wrapEvent hits its default branch.
+func TestUpdateAvailableMsgToProto_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	src := app.UpdateAvailableMsg{
+		CurrentVersion: "1.0.0",
+		LatestVersion:  "1.1.0",
+		IsDevelopment:  false,
+	}
+
+	env := wrapEvent(src)
+	require.NotNil(t, env)
+	require.Equal(t, pubsub.PayloadTypeUpdateAvailable, env.Type)
+
+	var decoded pubsub.Event[proto.UpdateAvailable]
+	require.NoError(t, json.Unmarshal(env.Payload, &decoded))
+	require.Equal(t, pubsub.UpdatedEvent, decoded.Type)
+	require.Equal(t, "1.0.0", decoded.Payload.CurrentVersion)
+	require.Equal(t, "1.1.0", decoded.Payload.LatestVersion)
+	require.False(t, decoded.Payload.IsDevelopment)
+}
+
+// TestMCPChannelMessageNotWrappedAsStateChange verifies that an
+// EventChannelMessage — which has no proto representation until session
+// delivery is wired up in a later PR — is NOT wrapped as a spurious
+// state_changed MCP event by the SSE event pipeline. Before the fix,
+// mcpEventTypeToProto's default branch mapped every unknown event type to
+// MCPEventStateChanged, so a channel notification looked like a state
+// change to every SSE client.
+func TestMCPChannelMessageNotWrappedAsStateChange(t *testing.T) {
+	t.Parallel()
+
+	src := pubsub.Event[mcp.Event]{
+		Type: pubsub.CreatedEvent,
+		Payload: mcp.Event{
+			Type:           mcp.EventChannelMessage,
+			Name:           "webhook",
+			ChannelMessage: `<channel source="webhook">build failed</channel>`,
+		},
+	}
+
+	env := wrapEvent(src)
+	require.Nil(t, env, "EventChannelMessage must not be wrapped as an SSE event (no proto representation yet)")
+}
+
+// TestMCPUnknownEventTypeNotMappedToStateChange verifies that any
+// unrecognized MCP event type is not silently coerced to state_changed —
+// the mapping must return ok=false so wrapEvent can drop it instead of
+// fabricating a state change.
+func TestMCPUnknownEventTypeNotMappedToStateChange(t *testing.T) {
+	t.Parallel()
+
+	// Use a value well outside the known range.
+	unknown := mcp.EventType(99)
+	pt := mcpEventTypeToProto(unknown)
+	require.Equal(t, proto.MCPEventType(""), pt,
+		"unknown MCP event types must map to empty proto type, not state_changed")
+}
+
+// TestMessageToProtoPrismModel ensures the Prism-routed model fields survive
+// the conversion to proto. Without them the client TUI cannot show which
+// model actually served each turn on Hyper's model router.
+func TestMessageToProtoPrismModel(t *testing.T) {
+	t.Parallel()
+
+	src := message.Message{
+		ID:             "m1",
+		Role:           message.Assistant,
+		Model:          "prism-model",
+		Provider:       "hyper",
+		PrismModelID:   "prism-42",
+		PrismModelName: "GLM 5.3",
+
+		PrismHypercreditSavings: ptrFloat(1.5),
+		PrismDollarSavings:      ptrFloat(0.002),
+	}
+
+	got := messageToProto(src)
+	require.Equal(t, "prism-42", got.PrismModelID)
+	require.Equal(t, "GLM 5.3", got.PrismModelName)
+	require.NotNil(t, got.PrismHypercreditSavings)
+	require.Equal(t, 1.5, *got.PrismHypercreditSavings)
+	require.NotNil(t, got.PrismDollarSavings)
+	require.Equal(t, 0.002, *got.PrismDollarSavings)
+}
+
+func ptrFloat(v float64) *float64 { return &v }

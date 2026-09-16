@@ -34,6 +34,12 @@ type List struct {
 	// renderCallbacks is a list of callbacks to apply when rendering items.
 	renderCallbacks []func(idx, selectedIdx int, item Item) Item
 
+	// totalHeightCache is a cached value of the total rendered height of
+	// all items. It is invalidated whenever the item set changes or the
+	// viewport width changes (which can alter per-item line counts).
+	totalHeightCache int
+	totalHeightValid bool
+
 	// cache is the F6 list-level render memo, keyed by item pointer.
 	// Each entry stores the rendered content, a pre-split slice of
 	// lines (so AtBottom / Render / VisibleItemIndices /
@@ -119,10 +125,14 @@ func (l *List) AtBottom() bool {
 		return true
 	}
 
-	// Calculate the height from offsetIdx to the end.
+	// Calculate the height from offsetIdx to the end. The comparison is
+	// against the visible height (totalHeight minus the lines of the first
+	// item that are scrolled out of view), otherwise a first item taller
+	// than the viewport reports "not at bottom" while it is in fact
+	// pinned there.
 	var totalHeight int
 	for idx := l.offsetIdx; idx < len(l.items); idx++ {
-		if totalHeight > l.height {
+		if totalHeight-l.offsetLine > l.height {
 			// No need to calculate further, we're already past the viewport height
 			return false
 		}
@@ -158,16 +168,84 @@ func (l *List) Len() int {
 }
 
 // TotalHeight returns the total height of all items in the list.
+// The result is cached and only recomputed when the item set or
+// viewport width changes.
 func (l *List) TotalHeight() int {
+	if l.totalHeightValid {
+		return l.totalHeightCache
+	}
 	total := 0
 	for idx := range l.items {
-		item := l.getItem(idx)
-		total += item.height
+		entry := l.renderItemEntry(idx)
+		if entry == nil {
+			continue
+		}
+		total += entry.height
 		if l.gap > 0 && idx < len(l.items)-1 {
 			total += l.gap
 		}
 	}
+	l.totalHeightCache = total
+	l.totalHeightValid = true
 	return total
+}
+
+// Prewarm renders items in the range [from, from+batch) into the width
+// cache and returns the next index to warm (len(items) when done). It lets
+// a caller populate the per-item render cache incrementally across frames
+// so a later TotalHeight is instant instead of rendering everything at
+// once. Rendering is otherwise identical to what TotalHeight would do.
+func (l *List) Prewarm(from, batch int) int {
+	if from < 0 {
+		from = 0
+	}
+	end := min(from+batch, len(l.items))
+	for idx := from; idx < end; idx++ {
+		l.renderItemEntry(idx)
+	}
+	return end
+}
+
+// Overflows reports whether the items' total height exceeds the given
+// viewport height. It walks from the bottom and stops as soon as the
+// threshold is crossed, so for content taller than the viewport (the
+// common case) it renders only a viewport's worth of items rather than
+// all of them — much cheaper than TotalHeight when only the boolean is
+// needed (e.g. deciding whether a scrollbar is required).
+func (l *List) Overflows(height int) bool {
+	total := 0
+	for idx := len(l.items) - 1; idx >= 0; idx-- {
+		total += l.getItem(idx).height
+		if l.gap > 0 && idx < len(l.items)-1 {
+			total += l.gap
+		}
+		if total > height {
+			return true
+		}
+	}
+	return false
+}
+
+// ItemsVersion folds every item's version into one number. It changes
+// whenever any item in this list mutates in a way that affects its rendered
+// output, since that is exactly the contract [Versioned.Bump] carries.
+//
+// It reads one field per item and renders nothing, so it is cheap enough to
+// call once per frame. Callers that memoize a whole rendered frame fold it
+// into their cache key to pick up item mutations they do not otherwise know
+// about.
+func (l *List) ItemsVersion() uint64 {
+	var v uint64
+	for _, item := range l.items {
+		v = v*31 + item.Version()
+	}
+	return v
+}
+
+// ScrollPosition returns the index of the first visible item and the line
+// offset into it. Unlike Offset it is O(1) and does not render items.
+func (l *List) ScrollPosition() (offsetIdx, offsetLine int) {
+	return l.offsetIdx, l.offsetLine
 }
 
 // Offset returns the current scroll offset in lines from the top.
@@ -289,6 +367,11 @@ func (l *List) renderItemEntry(idx int) *listCacheEntry {
 		entry = &listCacheEntry{}
 		l.cache[rawItem] = entry
 	}
+	// If the item's rendered height changed, the cached total height is
+	// no longer valid and must be recomputed on the next TotalHeight call.
+	if entry.height != height {
+		l.totalHeightValid = false
+	}
 	entry.width = l.width
 	entry.version = finalVersion
 	entry.frozen = frozen
@@ -303,6 +386,7 @@ func (l *List) invalidateAll() {
 	for k := range l.cache {
 		delete(l.cache, k)
 	}
+	l.totalHeightValid = false
 }
 
 // Invalidate drops the cache entry for the given item, forcing a
@@ -575,6 +659,7 @@ func (l *List) PrependItems(items ...Item) {
 	if l.selectedIdx != -1 {
 		l.selectedIdx += len(items)
 	}
+	l.totalHeightValid = false
 }
 
 // SetItems sets the items in the list. Cache entries for items that
@@ -586,11 +671,13 @@ func (l *List) SetItems(items ...Item) {
 	l.offsetIdx = min(l.offsetIdx, len(l.items)-1)
 	l.offsetLine = 0
 	l.retainCacheFor(items)
+	l.totalHeightValid = false
 }
 
 // AppendItems appends items to the list.
 func (l *List) AppendItems(items ...Item) {
 	l.items = append(l.items, items...)
+	l.totalHeightValid = false
 }
 
 // RemoveItem removes the item at the given index from the list.
@@ -623,6 +710,7 @@ func (l *List) RemoveItem(idx int) {
 		l.offsetIdx = max(0, len(l.items)-1)
 		l.offsetLine = 0
 	}
+	l.totalHeightValid = false
 }
 
 // Focused returns whether the list is focused.
@@ -660,6 +748,18 @@ func (l *List) ScrollToBottom() {
 // ScrollToSelected scrolls the list to the selected item.
 func (l *List) ScrollToSelected() {
 	if l.selectedIdx < 0 || l.selectedIdx >= len(l.items) {
+		return
+	}
+
+	// The list may not have been sized yet when the caller sets up its
+	// selection, e.g. a dialog constructor that runs before the first
+	// Draw. With no viewport height there is no visibility window to fit
+	// the selection into, so pin the selected item to the top of the
+	// viewport; the first render then shows it instead of computing a
+	// bogus offset that skips past it entirely.
+	if l.height <= 0 {
+		l.offsetIdx = l.selectedIdx
+		l.offsetLine = 0
 		return
 	}
 

@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"charm.land/log/v2"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/format"
+	"github.com/charmbracelet/crush/internal/herdr"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
@@ -23,7 +23,6 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/exp/charmtone"
 	"github.com/charmbracelet/x/term"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -54,6 +53,11 @@ crush run --quiet "Generate a README for this project"
 # Run in verbose mode (show logs)
 crush run --verbose "Generate a README for this project"
 
+# Use a specific reasoning effort
+# Levels depend on the model, unsupported values are rejected
+# with the accepted values listed
+crush run --reasoning-effort high "What is the meaning of life?"
+
 # Continue a previous session
 crush run --session {session-id} "Follow up on your last response"
 
@@ -63,12 +67,13 @@ crush run --continue "Follow up on your last response"
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
-			quiet, _      = cmd.Flags().GetBool("quiet")
-			verbose, _    = cmd.Flags().GetBool("verbose")
-			largeModel, _ = cmd.Flags().GetString("model")
-			smallModel, _ = cmd.Flags().GetString("small-model")
-			sessionID, _  = cmd.Flags().GetString("session")
-			useLast, _    = cmd.Flags().GetBool("continue")
+			quiet, _           = cmd.Flags().GetBool("quiet")
+			verbose, _         = cmd.Flags().GetBool("verbose")
+			largeModel, _      = cmd.Flags().GetString("model")
+			smallModel, _      = cmd.Flags().GetString("small-model")
+			reasoningEffort, _ = cmd.Flags().GetString("reasoning-effort")
+			sessionID, _       = cmd.Flags().GetString("session")
+			useLast, _         = cmd.Flags().GetBool("continue")
 		)
 
 		// Cancel on SIGINT or SIGTERM.
@@ -105,6 +110,15 @@ crush run --continue "Follow up on your last response"
 
 			event.AppInitialized()
 
+			if !ws.Config.IsConfigured() {
+				return fmt.Errorf("no providers configured - please run 'crush' to set up a provider interactively")
+			}
+
+			clientWs := workspace.NewClientWorkspace(c, *ws)
+			if err := clientWs.InitCoderAgentNonInteractive(ctx); err != nil {
+				return fmt.Errorf("failed to initialize agent: %w", err)
+			}
+
 			if sessionID != "" {
 				sess, err := resolveSessionByID(ctx, c, ws.ID, sessionID)
 				if err != nil {
@@ -113,15 +127,11 @@ crush run --continue "Follow up on your last response"
 				sessionID = sess.ID
 			}
 
-			if !ws.Config.IsConfigured() {
-				return fmt.Errorf("no providers configured - please run 'crush' to set up a provider interactively")
-			}
-
 			if verbose {
 				slog.SetDefault(slog.New(log.New(os.Stderr)))
 			}
 
-			return runNonInteractive(ctx, c, ws, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast)
+			return runNonInteractive(ctx, c, ws, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast)
 		}
 
 		ws, cleanup, err := setupLocalWorkspace(cmd)
@@ -141,7 +151,16 @@ crush run --continue "Follow up on your last response"
 		}
 
 		appWs := ws.(*workspace.AppWorkspace)
-		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast)
+
+		if sessionID != "" {
+			sess, err := resolveSessionID(ctx, appWs.App().Sessions, sessionID)
+			if err != nil {
+				return err
+			}
+			sessionID = sess.ID
+		}
+
+		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast)
 	},
 }
 
@@ -150,6 +169,7 @@ func init() {
 	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
 	runCmd.Flags().String("small-model", "", "Small model to use. If not provided, uses the default small model for the provider")
+	runCmd.Flags().String("reasoning-effort", "", "Reasoning effort for the model (e.g. low, medium, high). Levels depend on the model; unsupported values are rejected with the accepted values listed")
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
@@ -161,7 +181,7 @@ func runNonInteractive(
 	ctx context.Context,
 	c *client.Client,
 	ws *proto.Workspace,
-	prompt, largeModel, smallModel string,
+	prompt, largeModel, smallModel, reasoningEffort string,
 	hideSpinner bool,
 	continueSessionID string,
 	useLast bool,
@@ -177,32 +197,32 @@ func runNonInteractive(
 		}
 	}
 
+	// The reasoning effort applies to the model that will actually run.
+	// On a continued session without an explicit model override, the
+	// model is resolved later from the session's last assistant message,
+	// so the override is applied after that restore instead.
+	deferredEffort := (continueSessionID != "" || useLast) && largeModel == "" && smallModel == ""
+	if reasoningEffort != "" && !deferredEffort {
+		if err := overrideReasoningEffort(ctx, c, ws.ID, reasoningEffort); err != nil {
+			return err
+		}
+	}
+
 	var (
 		spinner   *format.Spinner
-		stdoutTTY bool
 		stderrTTY bool
-		stdinTTY  bool
 		progress  bool
 	)
 
-	stdoutTTY = term.IsTerminal(os.Stdout.Fd())
 	stderrTTY = term.IsTerminal(os.Stderr.Fd())
-	stdinTTY = term.IsTerminal(os.Stdin.Fd())
 	progress = ws.Config.Options.Progress == nil || *ws.Config.Options.Progress
 
 	if !hideSpinner && stderrTTY {
 		t := styles.ThemeForProvider(ws.Config.Models[config.SelectedModelTypeLarge].Provider)
 
-		hasDarkBG := true
-		if stdinTTY && stdoutTTY {
-			hasDarkBG = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
-		}
-		defaultFG := lipgloss.LightDark(hasDarkBG)(charmtone.Pepper, t.WorkingLabelColor)
-
 		spinner = format.NewSpinner(ctx, cancel, anim.Settings{
 			Size:        10,
 			Label:       "Generating",
-			LabelColor:  defaultFG,
 			GradColorA:  t.WorkingGradFromColor,
 			GradColorB:  t.WorkingGradToColor,
 			CycleColors: true,
@@ -236,8 +256,22 @@ func runNonInteractive(
 	}
 	if continueSessionID != "" || useLast {
 		slog.Info("Continuing session for non-interactive run", "session_id", sess.ID)
+		// If no explicit model override was requested, restore the
+		// model/provider from the last assistant message in the
+		// session, provided it is still available.
+		if largeModel == "" && smallModel == "" {
+			if err := restoreModelFromSession(ctx, c, ws, sess.ID); err != nil {
+				slog.Warn("Failed to restore model from session", "error", err)
+			}
+		}
 	} else {
 		slog.Info("Created session for non-interactive run", "session_id", sess.ID)
+	}
+
+	if reasoningEffort != "" && deferredEffort {
+		if err := overrideReasoningEffort(ctx, c, ws.ID, reasoningEffort); err != nil {
+			return err
+		}
 	}
 
 	events, err := c.SubscribeEvents(ctx, ws.ID)
@@ -262,6 +296,11 @@ func runNonInteractive(
 		read:      make(map[string]int),
 	}
 
+	// Start herdr integration when running inside a herdr pane.
+	hc := herdr.Init()
+	hc.SetSessionID(sess.ID)
+	defer hc.Close()
+
 	defer func() {
 		if progress && stderrTTY {
 			_, _ = fmt.Fprintf(os.Stderr, ansi.ResetProgressBar)
@@ -279,6 +318,11 @@ func runNonInteractive(
 			if !ok {
 				stopSpinner()
 				return nil
+			}
+
+			// Forward events to herdr if running inside a herdr pane.
+			if hev := herdr.Translate(ev); hev != nil {
+				hc.HandleEvent(hev)
 			}
 
 			done, err := stream.handle(ev, stopSpinner)
@@ -409,11 +453,27 @@ func (s *runStream) handle(ev any, stopSpinner func()) (done bool, err error) {
 		return true, nil
 
 	case pubsub.Event[proto.AgentEvent]:
-		if e.Payload.Error != nil {
-			stop()
-			return true, fmt.Errorf("agent error: %w", e.Payload.Error)
+		if e.Payload.Error == nil {
+			return false, nil
 		}
-		return false, nil
+		// Attribute the error to our run before treating it as
+		// fatal. Async errors from an unrelated workspace run share
+		// this channel, so a foreign failure must not abort us:
+		//   - if the event carries a RunID, it is the authoritative
+		//     correlator: it must match our run exactly, otherwise it
+		//     belongs to a different request and we ignore it.
+		//   - if the event carries no RunID (older server), fall back
+		//     to SessionID: it must be present and match our session,
+		//     otherwise we ignore it.
+		if e.Payload.RunID != "" {
+			if e.Payload.RunID != s.runID {
+				return false, nil
+			}
+		} else if e.Payload.SessionID == "" || e.Payload.SessionID != s.sessionID {
+			return false, nil
+		}
+		stop()
+		return true, fmt.Errorf("agent error: %w", e.Payload.Error)
 	}
 	return false, nil
 }
@@ -500,6 +560,91 @@ func overrideModels(
 	}
 
 	return c.UpdateAgent(ctx, ws.ID)
+}
+
+// restoreModelFromSession reads the last assistant message in the
+// session and, if it used a different provider/model than the current
+// config, updates the preferred model on the server provided the
+// provider/model is still available. This ensures that continuing a
+// session uses the same model that produced the last response.
+func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Workspace, sessionID string) error {
+	msgs, err := c.ListMessages(ctx, ws.ID, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to list messages: %w", err)
+	}
+
+	var lastAssistant *proto.Message
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == proto.Assistant && !msgs[i].IsSummaryMessage {
+			lastAssistant = &msgs[i]
+			break
+		}
+	}
+	if lastAssistant == nil || lastAssistant.Provider == "" || lastAssistant.Model == "" {
+		return nil
+	}
+
+	cfg := ws.Config
+	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
+	if currentLarge.Provider == lastAssistant.Provider && currentLarge.Model == lastAssistant.Model {
+		return nil
+	}
+
+	if !cfg.IsModelAvailable(lastAssistant.Provider, lastAssistant.Model) {
+		slog.Debug("Skipping model restoration: provider/model not available",
+			"provider", lastAssistant.Provider,
+			"model", lastAssistant.Model)
+		return nil
+	}
+
+	selectedModel := config.SelectedModel{
+		Provider: lastAssistant.Provider,
+		Model:    lastAssistant.Model,
+	}
+	if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, selectedModel); err != nil {
+		return fmt.Errorf("failed to set large model: %w", err)
+	}
+
+	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
+		sm, err := c.GetDefaultSmallModel(ctx, ws.ID, lastAssistant.Provider)
+		if err != nil {
+			slog.Warn("Failed to get default small model", "error", err)
+		} else if sm != nil {
+			if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, *sm); err != nil {
+				slog.Warn("Failed to set small model during session restore", "error", err)
+			}
+		}
+	}
+
+	return c.UpdateAgent(ctx, ws.ID)
+}
+
+// overrideReasoningEffort validates the requested reasoning effort against
+// the large model in effect for this run (which may have been overridden by
+// --model or restored from a continued session) and applies it on the
+// server.
+func overrideReasoningEffort(ctx context.Context, c *client.Client, wsID, reasoningEffort string) error {
+	cfg, err := c.GetConfig(ctx, wsID)
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	selected, ok := cfg.Models[config.SelectedModelTypeLarge]
+	if !ok {
+		return fmt.Errorf("no large model selected; set one with the --model flag or 'model large'")
+	}
+	if err := cfg.ValidateReasoningEffort(selected.Provider, selected.Model, reasoningEffort); err != nil {
+		return err
+	}
+	selected.ReasoningEffort = reasoningEffort
+	slog.Info("Overriding reasoning effort for non-interactive run",
+		"provider", selected.Provider,
+		"model", selected.Model,
+		"reasoning_effort", reasoningEffort)
+	if err := c.UpdatePreferredModel(ctx, wsID, config.ScopeWorkspace, config.SelectedModelTypeLarge, selected); err != nil {
+		return fmt.Errorf("failed to set reasoning effort: %w", err)
+	}
+	return c.UpdateAgent(ctx, wsID)
 }
 
 type modelMatch struct {

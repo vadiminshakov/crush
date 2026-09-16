@@ -30,6 +30,16 @@ const responseContextHeight = 10
 // toolBodyLeftPaddingTotal represents the padding that should be applied to each tool body
 const toolBodyLeftPaddingTotal = 2
 
+// collapsedMaxLines returns the number of lines to display when content
+// is collapsed. If collapsing would hide only a single line, all lines
+// are shown instead.
+func collapsedMaxLines(totalLines int) int {
+	if totalLines <= responseContextHeight+1 {
+		return totalLines
+	}
+	return responseContextHeight
+}
+
 // ToolStatus represents the current state of a tool call.
 type ToolStatus int
 
@@ -214,11 +224,12 @@ func NewToolMessageItem(
 	toolCall message.ToolCall,
 	result *message.ToolResult,
 	canceled bool,
+	workingDir string,
 ) ToolMessageItem {
 	var item ToolMessageItem
 	switch toolCall.Name {
 	case tools.BashToolName:
-		item = NewBashToolMessageItem(sty, toolCall, result, canceled)
+		item = NewBashToolMessageItem(sty, toolCall, result, canceled, workingDir)
 	case tools.JobOutputToolName:
 		item = NewJobOutputToolMessageItem(sty, toolCall, result, canceled)
 	case tools.JobKillToolName:
@@ -255,8 +266,20 @@ func NewToolMessageItem(
 		item = NewWebSearchToolMessageItem(sty, toolCall, result, canceled)
 	case tools.TodosToolName:
 		item = NewTodosToolMessageItem(sty, toolCall, result, canceled)
+	case tools.QuestionToolName:
+		item = NewQuestionToolMessageItem(sty, toolCall, result, canceled)
 	case tools.ReferencesToolName:
 		item = NewReferencesToolMessageItem(sty, toolCall, result, canceled)
+	case tools.DefinitionToolName:
+		item = NewDefinitionToolMessageItem(sty, toolCall, result, canceled)
+	case tools.RenameToolName:
+		item = NewRenameToolMessageItem(sty, toolCall, result, canceled)
+	case tools.ReplaceSymbolToolName:
+		item = NewReplaceSymbolToolMessageItem(sty, toolCall, result, canceled)
+	case tools.CallHierarchyToolName:
+		item = NewCallHierarchyToolMessageItem(sty, toolCall, result, canceled)
+	case tools.SymbolsToolName:
+		item = NewSymbolsToolMessageItem(sty, toolCall, result, canceled)
 	case tools.LSPRestartToolName:
 		item = NewLSPRestartToolMessageItem(sty, toolCall, result, canceled)
 	default:
@@ -287,32 +310,24 @@ func (t *baseToolMessageItem) ID() string {
 	return t.toolCall.ID
 }
 
-// StartAnimation starts the assistant message animation if it should be spinning.
-func (t *baseToolMessageItem) StartAnimation() tea.Cmd {
-	if !t.isSpinning() {
-		return nil
-	}
-	return t.anim.Start()
+// Spinning implements [Animatable].
+func (t *baseToolMessageItem) Spinning() bool {
+	return t.isSpinning()
 }
 
-// Animate progresses the assistant message animation if it should be spinning.
+// Advance implements [Animatable].
 //
 // Bumps the F6 list-cache version so the next draw re-renders this
-// item: a spinner tick mutates anim's internal frame counter, which
-// changes the rendered output but is invisible to the per-item
-// caches. Without the bump the list cache would serve the previously
-// rendered frame indefinitely and the spinner would appear frozen.
-// The ID gate keeps unrelated ticks (routed here by a future change
-// to chat.Animate's dispatch) from churning the cache.
-func (t *baseToolMessageItem) Animate(msg anim.StepMsg) tea.Cmd {
-	if !t.isSpinning() {
-		return nil
-	}
-	if msg.ID != t.toolCall.ID {
-		return nil
+// item: a spinner frame mutates anim's internal counter, which changes
+// the rendered output but is invisible to the per-item caches. Without
+// the bump the list cache would serve the previously rendered frame
+// indefinitely and the spinner would appear frozen.
+func (t *baseToolMessageItem) Advance() bool {
+	if !t.isSpinning() || !t.anim.Advance() {
+		return false
 	}
 	t.Bump()
-	return t.anim.Animate(msg)
+	return true
 }
 
 // RawRender implements [MessageItem].
@@ -542,7 +557,8 @@ func toolErrorContent(sty *styles.Styles, result *message.ToolResult, width int)
 		return ""
 	}
 	errContent := strings.ReplaceAll(result.Content, "\n", " ")
-	if strings.Contains(errContent, "User denied permission") {
+	if strings.Contains(errContent, "User denied permission") ||
+		strings.Contains(errContent, "User cancelled") {
 		deniedTag := sty.Tool.WarnTag.Render("WARN")
 		deniedTagWidth := lipgloss.Width(deniedTag)
 		errContent = ansi.Truncate(errContent, width-deniedTagWidth-3, "…")
@@ -569,9 +585,9 @@ func toolIcon(sty *styles.Styles, status ToolStatus) string {
 	}
 }
 
-// toolParamList formats parameters as "main (key=value, ...)" with truncation.
 // toolParamList formats tool parameters as "main (key=value, ...)" with truncation.
-func toolParamList(sty *styles.Styles, params []string, width int) string {
+// When opts.ExpandedContent is true, the output wraps instead of truncating.
+func toolParamList(sty *styles.Styles, params []string, width int, opts *ToolRenderOpts) string {
 	// minSpaceForMainParam is the min space required for the main param
 	// if this is less that the value set we will only show the main param nothing else
 	const minSpaceForMainParam = 30
@@ -598,14 +614,18 @@ func toolParamList(sty *styles.Styles, params []string, width int) string {
 		}
 	}
 
-	if width >= 0 {
+	if width >= 0 && (opts == nil || !opts.ExpandedContent) {
 		output = ansi.Truncate(output, width, "…")
+	} else if opts != nil && opts.ExpandedContent && width > 0 && lipgloss.Width(output) > width {
+		output = ansi.Hardwrap(output, width, false)
 	}
 	return sty.Tool.ParamMain.Render(output)
 }
 
 // toolHeader builds the tool header line: "● ToolName params..."
-func toolHeader(sty *styles.Styles, status ToolStatus, name string, width int, nested bool, params ...string) string {
+// When opts.ExpandedContent is true, long parameters wrap instead of truncating.
+func toolHeader(sty *styles.Styles, status ToolStatus, name string, width int, opts *ToolRenderOpts, params ...string) string {
+	nested := opts != nil && opts.Compact
 	icon := toolIcon(sty, status)
 	nameStyle := sty.Tool.NameNormal
 	if nested {
@@ -615,16 +635,29 @@ func toolHeader(sty *styles.Styles, status ToolStatus, name string, width int, n
 	prefix := fmt.Sprintf("%s %s ", icon, toolName)
 	prefixWidth := lipgloss.Width(prefix)
 	remainingWidth := width - prefixWidth
-	paramsStr := toolParamList(sty, params, remainingWidth)
+	paramsStr := toolParamList(sty, params, remainingWidth, opts)
+
+	// When expanded, toolParamList may return multiple lines. Indent
+	// continuation lines to align with the first line's param text.
+	if strings.Contains(paramsStr, "\n") {
+		lines := strings.Split(paramsStr, "\n")
+		indent := strings.Repeat(" ", prefixWidth)
+		for i := 1; i < len(lines); i++ {
+			lines[i] = indent + lines[i]
+		}
+		return prefix + strings.Join(lines, "\n")
+	}
 	return prefix + paramsStr
 }
 
 // toolOutputPlainContent renders plain text with optional expansion support.
 func toolOutputPlainContent(sty *styles.Styles, content string, width int, expanded bool) string {
 	content = stringext.NormalizeSpace(content)
+	content = common.StripCursorControl(content)
+	content = common.RemapANSI16(content, sty.ANSI)
 	lines := strings.Split(content, "\n")
 
-	maxLines := responseContextHeight
+	maxLines := collapsedMaxLines(len(lines))
 	if expanded {
 		maxLines = len(lines) // Show all
 	}
@@ -641,12 +674,12 @@ func toolOutputPlainContent(sty *styles.Styles, content string, width int, expan
 		out = append(out, sty.Tool.ContentLine.Width(width).Render(ln))
 	}
 
-	wasTruncated := len(lines) > responseContextHeight
+	wasTruncated := len(lines) > maxLines
 
 	if !expanded && wasTruncated {
 		out = append(out, sty.Tool.ContentTruncation.
 			Width(width).
-			Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-responseContextHeight)))
+			Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-maxLines)))
 	}
 
 	return strings.Join(out, "\n")
@@ -657,7 +690,7 @@ func toolOutputCodeContent(sty *styles.Styles, path, content string, offset, wid
 	content = stringext.NormalizeSpace(content)
 
 	lines := strings.Split(content, "\n")
-	maxLines := responseContextHeight
+	maxLines := collapsedMaxLines(len(lines))
 	if expanded {
 		maxLines = len(lines)
 	}
@@ -947,7 +980,7 @@ func toolOutputDiffContent(sty *styles.Styles, file, oldContent, newContent stri
 	lines := strings.Split(formatted, "\n")
 
 	// Truncate if needed.
-	maxLines := responseContextHeight
+	maxLines := collapsedMaxLines(len(lines))
 	if expanded {
 		maxLines = len(lines)
 	}
@@ -997,7 +1030,7 @@ func toolOutputMultiEditDiffContent(sty *styles.Styles, file string, meta tools.
 	lines := strings.Split(formatted, "\n")
 
 	// Truncate if needed.
-	maxLines := responseContextHeight
+	maxLines := collapsedMaxLines(len(lines))
 	if expanded {
 		maxLines = len(lines)
 	}
@@ -1057,7 +1090,7 @@ func toolOutputMarkdownContent(sty *styles.Styles, content string, width int, ex
 	}
 
 	lines := strings.Split(rendered, "\n")
-	maxLines := responseContextHeight
+	maxLines := collapsedMaxLines(len(lines))
 	if expanded {
 		maxLines = len(lines)
 	}

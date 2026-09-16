@@ -12,15 +12,18 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -44,6 +47,7 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 )
 
@@ -80,17 +84,18 @@ type SessionAgentCall struct {
 	// reliable completion contract (e.g. `crush run` against a
 	// session that may be busy) MUST set it; SessionID alone is
 	// ambiguous when concurrent turns share the same session.
-	RunID            string
-	Prompt           string
-	ProviderOptions  fantasy.ProviderOptions
-	Attachments      []message.Attachment
-	MaxOutputTokens  int64
-	Temperature      *float64
-	TopP             *float64
-	TopK             *int64
-	FrequencyPenalty *float64
-	PresencePenalty  *float64
-	NonInteractive   bool
+	RunID             string
+	HiddenUserMessage bool
+	Prompt            string
+	ProviderOptions   fantasy.ProviderOptions
+	Attachments       []message.Attachment
+	MaxOutputTokens   int64
+	Temperature       *float64
+	TopP              *float64
+	TopK              *int64
+	FrequencyPenalty  *float64
+	PresencePenalty   *float64
+	NonInteractive    bool
 	// OnComplete, when non-nil, replaces the default RunComplete
 	// publish path: the inner Run hands the terminal payload to this
 	// callback instead of emitting it on the RunComplete broker. The
@@ -104,10 +109,34 @@ type SessionAgentCall struct {
 	// recursion drains, so falling back to the default broker
 	// publish keeps the event visible to subscribers.
 	OnComplete func(notify.RunComplete)
+	// Accepted, when non-nil, is the accept reservation taken by
+	// BeginAccepted before the call was dispatched onto a goroutine
+	// (the client/server fire-and-forget path). Run consumes it under
+	// dispatchMu[SessionID] once the accepted -> (cancel-on-entry |
+	// queued | active) transition has been chosen. When nil
+	// (in-process / local callers like AppWorkspace), behavior is
+	// unchanged and no accept tracking applies.
+	Accepted *AcceptedRun
+	// acceptSeq carries the accept sequence of the handle that produced
+	// this call after it has been enqueued and its Accepted handle
+	// stripped. The queue-drain paths compare it against a session's
+	// cancel mark so a follow-up queued before a cancel is dropped while
+	// one queued after the cancel survives. 0 means untracked (an
+	// in-process enqueue with no accept reservation), which the drain
+	// paths treat as covered by any present mark, preserving the
+	// pre-sequence behavior.
+	acceptSeq uint64
+	// OnAuthRefresh, when non-nil, is called by fantasy when a stream
+	// fails with an authentication error (HTTP 401). The callback should
+	// refresh credentials and return nil on success, in which case
+	// fantasy retries the stream transparently. Returning an error
+	// surfaces the original auth error without retry.
+	OnAuthRefresh func(ctx context.Context, err *fantasy.ProviderError) error
 }
 
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
+	BeginAccepted(sessionID string) *AcceptedRun
 	SetModels(large Model, small Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
@@ -118,8 +147,9 @@ type SessionAgent interface {
 	QueuedPrompts(sessionID string) int
 	QueuedPromptsList(sessionID string) []string
 	ClearQueue(sessionID string)
-	Summarize(context.Context, string, fantasy.ProviderOptions) error
+	Summarize(context.Context, string, fantasy.ProviderOptions, func(context.Context, *fantasy.ProviderError) error) error
 	Model() Model
+	GenerateTitle(ctx context.Context, sessionID, userPrompt string)
 }
 
 type Model struct {
@@ -127,6 +157,15 @@ type Model struct {
 	CatwalkCfg catwalk.Model
 	ModelCfg   config.SelectedModel
 	FlatRate   bool
+}
+
+// activeCancel wraps a context.CancelFunc with a unique pointer identity.
+// The pointer is used for compare-and-delete in the dispatch completion path:
+// when a finishing run's deferred cleanup fires, it must only remove its own
+// entry — not a newer run's entry that was installed in the window between
+// the explicit Del and the function return.
+type activeCancel struct {
+	cancel context.CancelFunc
 }
 
 type sessionAgent struct {
@@ -145,7 +184,44 @@ type sessionAgent struct {
 	runComplete          pubsub.Publisher[notify.RunComplete]
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
-	activeRequests *csync.Map[string, context.CancelFunc]
+	activeRequests *csync.Map[string, *activeCancel]
+
+	// dispatchMu holds a per-session mutex that serializes the
+	// accepted -> (cancel-on-entry | queued | active) transition in
+	// Run against a concurrent Cancel. The lock is held only during
+	// the brief handoff (no DB or LLM I/O under the lock).
+	dispatchMu *csync.Map[string, *sync.Mutex]
+	// acceptedRuns counts dispatched-but-not-yet-active runs per
+	// session. A counter > 0 means a dispatched prompt is in flight
+	// and has not yet completed the dispatch handoff in Run. Only
+	// BeginAccepted increments it; only AcceptedRun.Close decrements
+	// it.
+	acceptedRuns *csync.Map[string, int]
+	// cancelMark records, per session, a high-water accept sequence: an
+	// accepted handle is canceled by it iff the handle's sequence is at
+	// or below the mark. Cancel raises the mark to the latest sequence
+	// assigned at cancel time, so a single Cancel covers every prompt
+	// accepted-but-not-yet-active then, while a prompt accepted later
+	// (higher sequence) is never poisoned. Absent or 0 means no pending
+	// cancel. It is only raised by Cancel when acceptedRuns > 0, so an
+	// idle Escape never records a mark.
+	cancelMark *csync.Map[string, uint64]
+	// dispatchMuCreate guards lazy creation of per-session entries in
+	// dispatchMu so two goroutines can't race to lock different mutex
+	// instances for the same session.
+	dispatchMuCreate sync.Mutex
+	// acceptedMu serializes increments/decrements of acceptedRuns and
+	// the assignment of accept sequence numbers from acceptSeqGen. It
+	// is separate from dispatchMu so AcceptedRun.Close (which may run
+	// while Run holds dispatchMu for the same session) does not
+	// deadlock by re-entering the dispatch lock.
+	acceptedMu sync.Mutex
+	// acceptSeqGen is the monotonic source of accept sequence numbers.
+	// Each BeginAccepted increments it under acceptedMu and stamps the
+	// returned handle, so sequences strictly increase in accept order
+	// across the agent. Cancel uses its current value as the per-session
+	// high-water mark.
+	acceptSeqGen uint64
 }
 
 type SessionAgentOptions struct {
@@ -180,36 +256,407 @@ func NewSessionAgent(
 		notify:               opts.Notify,
 		runComplete:          opts.RunComplete,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
-		activeRequests:       csync.NewMap[string, context.CancelFunc](),
+		activeRequests:       csync.NewMap[string, *activeCancel](),
+		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
+		acceptedRuns:         csync.NewMap[string, int](),
+		cancelMark:           csync.NewMap[string, uint64](),
 	}
 }
 
-func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *fantasy.AgentResult, retErr error) {
+// AcceptedRun owns exactly one accept reservation taken by
+// BeginAccepted. It is the only carrier of accept-state across the
+// backend.runAgent / Coordinator.Run / sessionAgent.Run layers: a
+// counter > 0 means a dispatched prompt is in flight and has not yet
+// completed the dispatch handoff in Run. Close is the only way to
+// release the reservation and is idempotent.
+type AcceptedRun struct {
+	agent     *sessionAgent
+	sessionID string
+	// seq is the monotonic accept sequence stamped by BeginAccepted. A
+	// cancel covers this handle iff seq is at or below the session's
+	// cancel mark, so a handle accepted after a cancel (higher seq) is
+	// never poisoned by it.
+	seq  uint64
+	done atomic.Bool
+}
+
+// Close decrements the accept counter for this reservation. It is safe
+// to call multiple times; only the first call has effect.
+func (r *AcceptedRun) Close() {
+	if r == nil {
+		return
+	}
+	if !r.done.CompareAndSwap(false, true) {
+		return
+	}
+	r.agent.endAccepted(r.sessionID)
+}
+
+// SessionID exposes the session this reservation is for so the run path
+// can use it without an extra parameter.
+func (r *AcceptedRun) SessionID() string {
+	if r == nil {
+		return ""
+	}
+	return r.sessionID
+}
+
+// BeginAccepted increments the accept counter for sessionID and returns
+// a handle whose Close is the only way to decrement it. It is the only
+// entry point that mutates acceptedRuns.
+func (a *sessionAgent) BeginAccepted(sessionID string) *AcceptedRun {
+	a.acceptedMu.Lock()
+	defer a.acceptedMu.Unlock()
+	count, _ := a.acceptedRuns.Get(sessionID)
+	a.acceptedRuns.Set(sessionID, count+1)
+	a.acceptSeqGen++
+	return &AcceptedRun{agent: a, sessionID: sessionID, seq: a.acceptSeqGen}
+}
+
+// endAccepted decrements the accept counter for sessionID. It is only
+// called via AcceptedRun.Close. It uses a dedicated lock (not the
+// per-session dispatch mutex) so it can run while Run holds dispatchMu
+// for the same session without deadlocking.
+//
+// When the count reaches zero the session's cancel mark is dropped: no
+// accepted handle remains for it to cover, and any handle accepted later
+// gets a strictly higher sequence that the mark would not match anyway.
+// Handles canceled on entry never reach RunComplete, so this is the only
+// place that clears the mark for an all-canceled batch. Sibling handles
+// covered by the same mark are serialized on the per-session dispatch
+// mutex and read the mark before they Close, so this never clears it out
+// from under a covered handle still waiting to enter Run.
+func (a *sessionAgent) endAccepted(sessionID string) {
+	a.acceptedMu.Lock()
+	defer a.acceptedMu.Unlock()
+	count, ok := a.acceptedRuns.Get(sessionID)
+	if !ok || count <= 1 {
+		a.acceptedRuns.Del(sessionID)
+		a.cancelMark.Del(sessionID)
+		return
+	}
+	a.acceptedRuns.Set(sessionID, count-1)
+}
+
+// sessionMu returns the per-session dispatch mutex, creating it on first
+// use. Creation is guarded so concurrent callers always observe the same
+// mutex instance for a given session.
+func (a *sessionAgent) sessionMu(sessionID string) *sync.Mutex {
+	if mu, ok := a.dispatchMu.Get(sessionID); ok {
+		return mu
+	}
+	a.dispatchMuCreate.Lock()
+	defer a.dispatchMuCreate.Unlock()
+	if mu, ok := a.dispatchMu.Get(sessionID); ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	a.dispatchMu.Set(sessionID, mu)
+	return mu
+}
+
+// enqueueCall appends call to the session's message queue. The
+// OnComplete hook is stripped: the caller that supplied it (typically
+// coordinator.Run) has its own retry/coalesce scope that ends when it
+// returns, so by the time the queue drains nobody is left to consume the
+// buffered terminal event. The recursive Run falls back to the default
+// broker publish, which is what existing subscribers expect for queued
+// turns.
+func (a *sessionAgent) enqueueCall(call SessionAgentCall) {
+	existing, ok := a.messageQueue.Get(call.SessionID)
+	if !ok {
+		existing = []SessionAgentCall{}
+	}
+	queued := call
+	if call.Accepted != nil {
+		// Preserve the accept sequence after the handle is stripped so
+		// the queue-drain paths can tell a follow-up queued before a
+		// cancel (covered by the mark) from one queued after it.
+		queued.acceptSeq = call.Accepted.seq
+	}
+	queued.OnComplete = nil
+	queued.Accepted = nil
+	existing = append(existing, queued)
+	a.messageQueue.Set(call.SessionID, existing)
+}
+
+// drainQueueForStep partitions the session's queued calls for the current
+// streaming step under the per-session dispatch mutex so the filtering is
+// atomic against a concurrent Cancel: canceledBySeq requires the caller to
+// hold that mutex, and evaluating it here (rather than after unlocking)
+// prevents a cancel recorded between the drain and the check from being
+// observed inconsistently.
+//
+// Calls covered by a pending cancel are dropped; the dropped ones that
+// carry a RunID are returned in canceledWithRunID so the caller can
+// publish their terminal cancelled RunComplete (a caller waiting on that
+// RunID, e.g. `crush run`, would otherwise hang). Uncanceled calls without
+// a RunID are returned in fold to be folded into the active turn,
+// preserving the existing follow-up behavior. Uncanceled calls that carry
+// a RunID are left in the queue so each runs as its own turn via the
+// recursive run path and publishes its own RunComplete, giving every
+// RunID-bearing prompt an explicit lifecycle instead of being silently
+// absorbed into another turn. fold is processed by the caller without the
+// lock held.
+func (a *sessionAgent) drainQueueForStep(sessionID string) (fold, canceledWithRunID []SessionAgentCall) {
+	dispatchLock := a.sessionMu(sessionID)
+	dispatchLock.Lock()
+	defer dispatchLock.Unlock()
+	queuedCalls, _ := a.messageQueue.Get(sessionID)
+	var keep []SessionAgentCall
+	for _, queued := range queuedCalls {
+		if a.canceledBySeq(sessionID, queued.acceptSeq) {
+			if queued.RunID != "" {
+				canceledWithRunID = append(canceledWithRunID, queued)
+			}
+			continue
+		}
+		if queued.RunID != "" {
+			keep = append(keep, queued)
+			continue
+		}
+		fold = append(fold, queued)
+	}
+	if len(keep) == 0 {
+		a.messageQueue.Del(sessionID)
+	} else {
+		a.messageQueue.Set(sessionID, keep)
+	}
+	return fold, canceledWithRunID
+}
+
+// publishCanceledQueueDrops emits a terminal cancelled RunComplete for
+// every dropped queued call that carries a RunID. A queued prompt removed
+// from the queue without ever running — covered by a pending cancel, or
+// cleared by Cancel/ClearQueue — would otherwise leave a caller blocked on
+// that RunID: `crush run` ignores live message events and exits only on a
+// RunComplete whose RunID matches. Calls without a RunID had no such waiter
+// and are dropped silently as before. A detached, bounded context keeps the
+// must-deliver publish alive even when the run context that triggered the
+// drop is already canceled.
+func (a *sessionAgent) publishCanceledQueueDrops(drops []SessionAgentCall) {
+	var hasRunID bool
+	for _, d := range drops {
+		if d.RunID != "" {
+			hasRunID = true
+			break
+		}
+	}
+	if !hasRunID {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, d := range drops {
+		if d.RunID == "" {
+			continue
+		}
+		a.publishRunComplete(ctx, d, notify.RunComplete{
+			SessionID: d.SessionID,
+			RunID:     d.RunID,
+			Cancelled: true,
+		})
+	}
+}
+
+// clearQueueAndNotify removes all queued prompts for the session and
+// publishes a terminal cancelled RunComplete for any that carried a RunID,
+// so callers waiting on those RunIDs (e.g. `crush run`) are not left
+// hanging when their queued prompt is discarded without running.
+func (a *sessionAgent) clearQueueAndNotify(sessionID string) {
+	queued, ok := a.messageQueue.Get(sessionID)
+	a.messageQueue.Del(sessionID)
+	if !ok {
+		return
+	}
+	a.publishCanceledQueueDrops(queued)
+}
+
+// clearPendingCancel removes any pending-cancel mark for sessionID. It
+// takes the per-session dispatch lock so it is ordered against Cancel
+// and the dispatch handoff.
+func (a *sessionAgent) clearPendingCancel(sessionID string) {
+	mu := a.sessionMu(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+	a.cancelMark.Del(sessionID)
+}
+
+// canceledBySeq reports whether an accepted handle or queued call with
+// the given accept sequence is covered by a pending cancel for the
+// session. Callers must hold the session's dispatch mutex. A tracked
+// sequence (seq > 0) is covered only when it is at or below the cancel
+// high-water mark, so a prompt accepted after the cancel (higher seq) is
+// never poisoned. An untracked sequence (seq == 0, an in-process enqueue
+// with no accept reservation) is covered whenever any mark is present,
+// preserving the pre-sequence behavior. The mark is not consumed: it
+// stays so every sibling handle it covers observes the same cancel, and
+// a later handle (higher seq) ignores it regardless.
+func (a *sessionAgent) canceledBySeq(sessionID string, seq uint64) bool {
+	mark, ok := a.cancelMark.Get(sessionID)
+	if !ok || mark == 0 {
+		return false
+	}
+	return seq == 0 || seq <= mark
+}
+
+// persistCanceledTurn writes the user/assistant records for a turn that
+// was canceled before (or just as) streaming would have produced them.
+// It creates the user message only when it was not already created by an
+// earlier createUserMessage call (userMsgCreated), then writes an
+// assistant message with FinishReasonCanceled. Both writes use
+// context.WithoutCancel(ctx) so workspace shutdown (which cancels the run
+// context) can't drop them.
+func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgentCall, userMsgCreated bool) error {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if !userMsgCreated {
+		if _, err := a.createUserMessage(writeCtx, call); err != nil {
+			return err
+		}
+	}
+	largeModel := a.largeModel.Get()
+	assistant, err := a.messages.Create(writeCtx, call.SessionID, message.CreateMessageParams{
+		Role:     message.Assistant,
+		Parts:    []message.ContentPart{},
+		Model:    largeModel.ModelCfg.Model,
+		Provider: largeModel.ModelCfg.Provider,
+	})
+	if err != nil {
+		return err
+	}
+	assistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+	return a.messages.Update(writeCtx, assistant)
+}
+
+// publishRunComplete emits the authoritative terminal event for a turn.
+// It honors the per-call OnComplete hook when set (so the coordinator can
+// coalesce retries) and otherwise falls back to the RunComplete broker.
+// ctx is used only for the bounded-blocking must-deliver publish; the
+// terminal payload is supplied by the caller. This is the single emit path
+// shared by the streaming defer and the cancel-on-entry early return so a
+// caller waiting on RunComplete (e.g. `crush run` with a RunID) always
+// observes exactly one terminal event regardless of which Run branch ends
+// the turn.
+func (a *sessionAgent) publishRunComplete(ctx context.Context, call SessionAgentCall, complete notify.RunComplete) {
+	if call.OnComplete != nil {
+		call.OnComplete(complete)
+		return
+	}
+	if a.runComplete == nil {
+		return
+	}
+	a.runComplete.PublishMustDeliver(ctx, pubsub.UpdatedEvent, complete)
+}
+
+// ValidateCall performs the cheap structural validation that
+// sessionAgent.Run requires before a call can be dispatched: a call must
+// carry either a non-empty prompt or a text attachment, and it must name a
+// session. It is exported so callers that accept a run before dispatching it
+// (e.g. backend.SendMessage) can apply the same checks and keep the error
+// contract consistent.
+func ValidateCall(call SessionAgentCall) error {
 	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
-		return nil, ErrEmptyPrompt
+		return ErrEmptyPrompt
 	}
 	if call.SessionID == "" {
-		return nil, ErrSessionMissing
+		return ErrSessionMissing
+	}
+	return nil
+}
+
+func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *fantasy.AgentResult, retErr error) {
+	if err := ValidateCall(call); err != nil {
+		return nil, err
 	}
 
-	// Queue the message if busy. Strip OnComplete: the caller that
-	// supplied the hook (typically coordinator.Run) has its own
-	// retry/coalesce scope that ends when it returns, so by the time
-	// the queue drains nobody is left to consume the buffered
-	// terminal event. The recursive Run will fall back to the
-	// default broker publish, which is what existing subscribers
-	// expect for queued turns.
-	if a.IsSessionBusy(call.SessionID) {
-		existing, ok := a.messageQueue.Get(call.SessionID)
-		if !ok {
-			existing = []SessionAgentCall{}
+	// genCtx/cancel are the run context and its cancel func, created under
+	// the per-session dispatch mutex below so a concurrent Cancel can observe
+	// the activeRequests entry before the assistant message exists.
+	var (
+		genCtx         context.Context
+		cancel         context.CancelFunc
+		userMsgCreated bool
+	)
+
+	// Serialize the dispatch decision (cancel-on-entry | queued | active)
+	// against a concurrent Cancel. Cancel takes the same per-session lock, so
+	// every cancel observes at least one of: a cancel mark, an activeRequests
+	// entry, or a messageQueue entry it then clears. Holding the lock across
+	// the busy check and the active registration also makes them atomic, so
+	// two concurrent in-process callers — a burst of channel events, or a
+	// channel event racing a typed prompt — cannot both pass the busy check
+	// and start two runs on the same session.
+	sessMu := a.sessionMu(call.SessionID)
+	sessMu.Lock()
+
+	if call.Accepted != nil && a.canceledBySeq(call.SessionID, call.Accepted.seq) {
+		// Cancel-on-entry: a cancel arrived while this accepted run was
+		// dispatched but not yet active, and this handle's accept sequence
+		// is at or below the session's cancel mark. The mark is left in
+		// place so sibling handles it also covers observe the same cancel;
+		// release the accept reservation, drop the lock, and persist a
+		// canceled turn without entering Stream.
+		//
+		// This path returns before the streaming defer that publishes
+		// RunComplete is installed, so emit the terminal event explicitly.
+		// Without it, a caller waiting on RunComplete for this RunID (e.g.
+		// `crush run`, which ignores message events and blocks on
+		// RunComplete) would hang on an immediately-canceled accepted run.
+		call.Accepted.Close()
+		sessMu.Unlock()
+		complete := notify.RunComplete{
+			SessionID: call.SessionID,
+			RunID:     call.RunID,
+			Cancelled: true,
 		}
-		queued := call
-		queued.OnComplete = nil
-		existing = append(existing, queued)
-		a.messageQueue.Set(call.SessionID, existing)
+		if err := a.persistCanceledTurn(ctx, call, false); err != nil {
+			complete.Error = err.Error()
+			a.publishRunComplete(ctx, call, complete)
+			return nil, err
+		}
+		a.publishRunComplete(ctx, call, complete)
 		return nil, nil
 	}
+
+	if a.IsSessionBusy(call.SessionID) {
+		// Busy: an earlier prompt is active. Queue this call so it is
+		// folded into (or sequenced after) the active turn, and release any
+		// accept reservation. A Cancel arriving after this point sees the
+		// active entry and clears the queue.
+		//
+		// enqueueCall strips OnComplete: the caller that supplied the hook
+		// (typically coordinator.Run) has its own retry/coalesce scope that
+		// ends when it returns, so by the time the queue drains nobody is
+		// left to consume the buffered terminal event. The queued turn falls
+		// back to the default broker publish, which is what existing
+		// subscribers expect.
+		a.enqueueCall(call)
+		if call.Accepted != nil {
+			call.Accepted.Close()
+		}
+		sessMu.Unlock()
+		return nil, nil
+	}
+
+	// Idle: become the active run. Register the cancel func before dropping
+	// the lock so a Cancel that arrives between here and assistant creation
+	// is not lost.
+	runCtx := context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
+	genCtx, cancel = context.WithCancel(runCtx)
+	ac := &activeCancel{cancel: cancel}
+	a.activeRequests.Set(call.SessionID, ac)
+	if call.Accepted != nil {
+		call.Accepted.Close()
+	}
+	sessMu.Unlock()
+
+	defer cancel()
+	// Conditional cleanup: only remove our entry if it hasn't been replaced
+	// by a newer run. Without this guard, the deferred Del fires after a
+	// concurrent run registers in the completion window, silently wiping
+	// the new run's cancel and breaking cancellation.
+	defer a.activeRequests.CompareAndDelete(call.SessionID, ac)
 
 	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
 	agentTools := a.tools.Copy()
@@ -255,30 +702,26 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	// Generate title if first message.
-	if len(msgs) == 0 {
-		titleCtx := ctx // Copy to avoid race with ctx reassignment below.
-		wg.Go(func() {
-			a.generateTitle(titleCtx, call.SessionID, call.Prompt)
-		})
+	// Generate title from the first real (non-shell) user prompt.
+	// can take tens of seconds. Blocking Run on it delays the
+	// response to the caller. Use a detached context so the title
+	// goroutine survives Run's cancel.
+	if !hasUserTextMessage(msgs) {
+		titleCtx := context.WithoutCancel(ctx)
+		go a.GenerateTitle(titleCtx, call.SessionID, call.Prompt)
 	}
-	defer wg.Wait()
 
 	// Add the user message to the session.
 	_, err = a.createUserMessage(ctx, call)
 	if err != nil {
 		return nil, err
 	}
+	userMsgCreated = true
 
-	// Add the session to the context.
+	// Add the session to the context. The run context (genCtx) and its
+	// cancel func were already created and registered under the dispatch
+	// mutex above for both the accepted and in-process paths.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
-
-	genCtx, cancel := context.WithCancel(ctx)
-	a.activeRequests.Set(call.SessionID, cancel)
-
-	defer cancel()
-	defer a.activeRequests.Del(call.SessionID)
 	// skipRunComplete is set just before the queued-recursion path so
 	// the outer Run doesn't publish a RunComplete that would race
 	// with — and be superseded by — the recursive call's own
@@ -306,7 +749,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// (the pubsub broker fan-in does not serialize publishes from
 	// different upstream brokers).
 	defer func() {
-		if flushErr := a.messages.FlushAll(ctx); flushErr != nil {
+		// Use a context detached from the run context: workspace
+		// shutdown cancels ctx before this goroutine returns, but the
+		// buffered streaming deltas must still land before the DB is
+		// closed. A short timeout bounds the flush.
+		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer flushCancel()
+		if flushErr := a.messages.FlushAll(flushCtx); flushErr != nil {
 			slog.Error("Failed to flush pending message updates after run", "error", flushErr)
 		}
 		if skipRunComplete {
@@ -330,14 +779,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// the authoritative terminal event so a momentarily-full
 		// subscriber channel can't silently drop it and hang
 		// non-interactive clients waiting on RunComplete.
-		if call.OnComplete != nil {
-			call.OnComplete(complete)
-			return
-		}
-		if a.runComplete == nil {
-			return
-		}
-		a.runComplete.PublishMustDeliver(ctx, pubsub.UpdatedEvent, complete)
+		a.publishRunComplete(ctx, call, complete)
 	}()
 
 	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.SupportsImages, call.Attachments...)
@@ -347,6 +789,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	var stepMessages []fantasy.Message
 	var shouldSummarize bool
+	sanitizedToolCalls := make(map[string]bool)
 	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it
 	var maxOutputTokens *int64
 	if call.MaxOutputTokens > 0 {
@@ -356,6 +799,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		Prompt:           message.PromptWithTextAttachments(call.Prompt, call.Attachments),
 		Files:            files,
 		Messages:         history,
+		Headers:          sessionHeaders(call.SessionID),
 		ProviderOptions:  call.ProviderOptions,
 		MaxOutputTokens:  maxOutputTokens,
 		TopP:             call.TopP,
@@ -372,9 +816,20 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// Use latest tools (updated by SetTools when MCP tools change).
 			prepared.Tools = a.tools.Copy()
 
-			queuedCalls, _ := a.messageQueue.Get(call.SessionID)
-			a.messageQueue.Del(call.SessionID)
-			for _, queued := range queuedCalls {
+			// Drain queued follow-up prompts for this step. Calls covered
+			// by a cancel recorded while they sat in the queue are dropped:
+			// a cancel that arrived after a prompt was queued must not let
+			// it run as part of this step. Coverage is per-call by accept
+			// sequence so a follow-up queued after the cancel (higher seq)
+			// is not dropped. A dropped prompt carrying a RunID still gets
+			// its terminal cancelled RunComplete so a caller waiting on it
+			// does not hang. Uncanceled prompts without a RunID are folded
+			// into this turn; uncanceled prompts with a RunID are left
+			// queued so each runs as its own turn (with its own
+			// RunComplete) via the recursive run path below.
+			fold, canceledRunIDs := a.drainQueueForStep(call.SessionID)
+			a.publishCanceledQueueDrops(canceledRunIDs)
+			for _, queued := range fold {
 				userMessage, createErr := a.createUserMessage(callContext, queued)
 				if createErr != nil {
 					return callContext, prepared, createErr
@@ -482,12 +937,32 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		OnRetry: func(err *fantasy.ProviderError, delay time.Duration) {
 			slog.Warn("Provider request failed, retrying", providerRetryLogFields(err, delay)...)
+			// Reset streamed content so the retried response doesn't
+			// concatenate with partial content from the failed attempt.
+			// On the final attempt (no more retries), any partial content
+			// stays in the message as useful context beneath the error.
+			currentAssistant.ResetStreamedContent()
+			if updateErr := a.messages.Update(genCtx, *currentAssistant); updateErr != nil {
+				slog.Error("Failed to reset message on retry", "error", updateErr)
+			}
+		},
+		OnAuthRefresh: call.OnAuthRefresh,
+		ModelProvider: func() fantasy.LanguageModel {
+			m := a.largeModel.Get()
+			slog.Info("ModelProvider called",
+				"provider", m.ModelCfg.Provider,
+				"model", m.ModelCfg.Model)
+			return m.Model
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
+			input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
+			if wasSanitized {
+				sanitizedToolCalls[tc.ToolCallID] = true
+			}
 			toolCall := message.ToolCall{
 				ID:               tc.ToolCallID,
 				Name:             tc.ToolName,
-				Input:            tc.Input,
+				Input:            input,
 				ProviderExecuted: false,
 				Finished:         true,
 			}
@@ -498,6 +973,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		OnToolResult: func(result fantasy.ToolResultContent) error {
 			toolResult := a.convertToToolResult(result)
+			if sanitizedToolCalls[result.ToolCallID] {
+				toolResult.Content = "Tool call failed: arguments were not valid JSON. Please check your tool call format and try again."
+				toolResult.IsError = true
+			}
 			// Use parent ctx instead of genCtx to ensure the message is created
 			// even if the request is canceled mid-stream
 			_, createMsgErr := a.messages.Create(ctx, currentAssistant.SessionID, message.CreateMessageParams{
@@ -509,6 +988,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return createMsgErr
 		},
 		OnStepFinish: func(stepResult fantasy.StepResult) error {
+			for _, w := range stepResult.Warnings {
+				slog.Warn("Provider warning", "type", w.Type, "message", w.Message)
+			}
 			finishReason := message.FinishReasonUnknown
 			switch stepResult.FinishReason {
 			case fantasy.FinishReasonLength:
@@ -517,6 +999,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				finishReason = message.FinishReasonEndTurn
 			case fantasy.FinishReasonToolCalls:
 				finishReason = message.FinishReasonToolUse
+			case fantasy.FinishReasonContentFilter:
+				// Provider safety classifier stopped the model
+				// (Anthropic stop_reason=refusal, OpenAI content_filter).
+				// The TUI owns the display copy; we only persist the
+				// reason so the UI can show a REFUSED banner.
+				finishReason = message.FinishReasonContentFilter
+				slog.Warn(
+					"Provider content filter stopped the model",
+					"session_id", call.SessionID,
+					"finish_reason", string(stepResult.FinishReason),
+				)
 			}
 			// If a tool result halted the turn (e.g. a hook halt or a
 			// permission denial), the step ends on FinishReasonToolCalls but
@@ -531,6 +1024,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}
 			}
 			currentAssistant.AddFinish(finishReason, "", "")
+			currentAssistant.PrismModelID, currentAssistant.PrismModelName = extractPrismModel(stepResult.ProviderMetadata)
+			currentAssistant.PrismHypercreditSavings, currentAssistant.PrismDollarSavings = extractPrismSavings(stepResult.ProviderMetadata)
 			sessionLock.Lock()
 			defer sessionLock.Unlock()
 
@@ -540,6 +1035,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
 			a.updateSessionUsage(largeModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata), estimated)
+			extractHyperCredits(stepResult.ProviderMetadata)
 			_, sessionErr := a.sessions.Save(ctx, updatedSession)
 			if sessionErr != nil {
 				return sessionErr
@@ -580,14 +1076,40 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if err != nil {
 		isHyper := largeModel.ModelCfg.Provider == hyper.Name
 		isCancelErr := errors.Is(err, context.Canceled)
+		slog.Info("Agent stream returned error",
+			"error", err.Error(),
+			"error_type", fmt.Sprintf("%T", err),
+			"is_hyper", isHyper,
+			"is_cancel", isCancelErr)
 		if currentAssistant == nil {
+			// Cancel-before-assistant-creation window: the run was
+			// canceled after activeRequests.Set but before PrepareStep
+			// created the assistant message. Without this, the turn
+			// would return with no FinishReasonCanceled marker and no
+			// user-visible record. The user message was already created
+			// above, so persistCanceledTurn only writes the assistant
+			// record.
+			if isCancelErr {
+				if persistErr := a.persistCanceledTurn(ctx, call, userMsgCreated); persistErr != nil {
+					return nil, persistErr
+				}
+			}
 			return result, err
 		}
+		// Persist final state with a context detached from the run
+		// context. The run context (ctx) is derived from the
+		// workspace context, which workspace shutdown cancels before
+		// agent goroutines finish; using ctx here would drop the
+		// final assistant state. WithoutCancel keeps the values
+		// (e.g. session ID) while ignoring cancellation, and a short
+		// timeout bounds the cleanup writes.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cleanupCancel()
 		// Ensure we finish thinking on error to close the reasoning state.
 		currentAssistant.FinishThinking()
 		toolCalls := currentAssistant.ToolCalls()
-		// INFO: we use the parent context here because the genCtx has been cancelled.
-		msgs, createErr := a.messages.List(ctx, currentAssistant.SessionID)
+		// INFO: we use the cleanup context here because the genCtx has been cancelled.
+		msgs, createErr := a.messages.List(cleanupCtx, currentAssistant.SessionID)
 		if createErr != nil {
 			return nil, createErr
 		}
@@ -596,7 +1118,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				tc.Finished = true
 				tc.Input = "{}"
 				currentAssistant.AddToolCall(tc)
-				updateErr := a.messages.Update(ctx, *currentAssistant)
+				updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
 				if updateErr != nil {
 					return nil, updateErr
 				}
@@ -629,7 +1151,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				Content:    content,
 				IsError:    true,
 			}
-			_, createErr = a.messages.Create(ctx, currentAssistant.SessionID, message.CreateMessageParams{
+			_, createErr = a.messages.Create(cleanupCtx, currentAssistant.SessionID, message.CreateMessageParams{
 				Role: message.Tool,
 				Parts: []message.ContentPart{
 					toolResult,
@@ -641,24 +1163,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 		var fantasyErr *fantasy.Error
 		var providerErr *fantasy.ProviderError
+		var requestTimedOutErr *requestTimeoutError
 		const defaultTitle = "Provider Error"
 		linkStyle := lipgloss.NewStyle().Foreground(charmtone.Guac).Underline(true)
 		if isCancelErr {
 			currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+		} else if errors.As(err, &requestTimedOutErr) {
+			// Checked before the provider branches so a deadline our own
+			// request timeout imposed is never reported as a provider error.
+			currentAssistant.AddFinish(message.FinishReasonError, "Request timed out", requestTimedOutErr.userMessage())
 		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
 			currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "crush auth" to re-authenticate.`)
-			if a.notify != nil {
-				a.notify.Publish(pubsub.CreatedEvent, notify.Notification{
-					SessionID:    call.SessionID,
-					SessionTitle: currentSession.Title,
-					Type:         notify.TypeReAuthenticate,
-					ProviderID:   largeModel.ModelCfg.Provider,
-				})
-			}
-		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired {
-			url := hyper.BaseURL()
-			link := linkStyle.Hyperlink(url, "id=hyper").Render(url)
-			currentAssistant.AddFinish(message.FinishReasonError, "No credits", "You're out of credits. Add more at "+link)
 		} else if errors.As(err, &providerErr) {
 			if providerErr.Message == "The requested model is not supported." {
 				url := "https://github.com/settings/copilot/features"
@@ -673,12 +1188,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 		} else if errors.As(err, &fantasyErr) {
 			currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(fantasyErr.Title), defaultTitle), fantasyErr.Message)
+		} else if fantasy.IsTransportError(err) {
+			wrapped := fantasy.NewTransportError(err)
+			currentAssistant.AddFinish(message.FinishReasonError, stringext.Capitalize(wrapped.Title), wrapped.Message)
 		} else {
 			currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, err.Error())
 		}
-		// Note: we use the parent context here because the genCtx has been
+		// Note: we use the cleanup context here because the genCtx has been
 		// cancelled.
-		updateErr := a.messages.Update(ctx, *currentAssistant)
+		updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
 		if updateErr != nil {
 			return nil, updateErr
 		}
@@ -687,7 +1205,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	if shouldSummarize {
 		a.activeRequests.Del(call.SessionID)
-		if summarizeErr := a.Summarize(genCtx, call.SessionID, call.ProviderOptions); summarizeErr != nil {
+		if summarizeErr := a.Summarize(genCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh); summarizeErr != nil {
 			return nil, summarizeErr
 		}
 		// If the agent wasn't done...
@@ -719,22 +1237,110 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		})
 	}
 
-	queuedMessages, ok := a.messageQueue.Get(call.SessionID)
-	if !ok || len(queuedMessages) == 0 {
+	// Hand off to the next queued prompt (if any) under dispatchMu so
+	// the transition from this finished run to the queued run is atomic
+	// against a concurrent Cancel. activeRequests for this session was
+	// just deleted above, so without the lock there is a window in
+	// which the session looks idle and a cancel becomes a no-op that
+	// fails to stop the queued prompt. Holding the lock lets us observe
+	// a pending cancel recorded against the session and drop the queue
+	// instead of running it, and (for the recursion) hand a fresh
+	// accept reservation to the dequeued call so acceptedRuns stays > 0
+	// across the recursive Run's own dispatch handoff — keeping the
+	// session observable to Cancel for the entire transition and
+	// closing the dequeue -> re-register window.
+	mu := a.sessionMu(call.SessionID)
+	mu.Lock()
+	queuedMessages, _ := a.messageQueue.Get(call.SessionID)
+	if mark, ok := a.cancelMark.Get(call.SessionID); ok && mark > 0 && len(queuedMessages) > 0 {
+		// A cancel was recorded for this session (e.g. it arrived while
+		// this run was active and follow-ups had been queued). Drop the
+		// queued prompts it covers (accept sequence at or below the
+		// mark, or untracked); keep any queued after the cancel (higher
+		// sequence) so they still run.
+		var kept []SessionAgentCall
+		var canceledRunIDDrops []SessionAgentCall
+		for _, q := range queuedMessages {
+			if q.acceptSeq == 0 || q.acceptSeq <= mark {
+				if q.RunID != "" {
+					canceledRunIDDrops = append(canceledRunIDDrops, q)
+				}
+				continue
+			}
+			kept = append(kept, q)
+		}
+		queuedMessages = kept
+		a.messageQueue.Set(call.SessionID, kept)
+		// A dropped prompt carrying a RunID must still publish its
+		// terminal cancelled RunComplete so a caller waiting on that
+		// RunID does not hang.
+		a.publishCanceledQueueDrops(canceledRunIDDrops)
+	}
+	if len(queuedMessages) == 0 {
+		// No queued work. Clear the cancel mark only when no accepted
+		// run remains in flight that it might still cover; otherwise a
+		// sibling prompt (sequence at or below the mark) waiting to
+		// enter Run would lose its cancellation. When accepted runs are
+		// gone, this also clears a stale mark so it can't catch a
+		// future run.
+		a.messageQueue.Del(call.SessionID)
+		a.acceptedMu.Lock()
+		inFlight, _ := a.acceptedRuns.Get(call.SessionID)
+		a.acceptedMu.Unlock()
+		if inFlight == 0 {
+			a.cancelMark.Del(call.SessionID)
+		}
+		mu.Unlock()
 		return result, err
 	}
-	// There are queued messages restart the loop. The recursive Run
-	// publishes its own RunComplete for the queued prompt, so suppress
-	// the outer defer's emit to avoid a duplicate event whose Error
-	// field would belong to the recursive turn but whose MessageID/Text
-	// would belong to the outer turn.
+	// There are queued messages, restart the loop. Suppress the outer
+	// defer's emit: it would otherwise observe the recursive Run's retErr
+	// (named-return clobbering through the return below) against this
+	// turn's MessageID/Text and publish a mixed, racing event.
 	skipRunComplete = true
+	// Decide whether this turn still owes its own terminal RunComplete.
+	// Each submitted prompt with a RunID has its own lifecycle, so a turn
+	// that is finished and handing off to a *different* queued prompt must
+	// publish its own RunComplete here — leaving it to the recursive turn
+	// (which carries a different RunID) would hang a caller waiting on
+	// this turn's RunID. The exception is the summarize-continuation path,
+	// which re-queues this same call (same RunID) to resume after a
+	// summary; in that case the eventual terminal turn for this RunID
+	// publishes, so publishing now would double-emit.
+	outerOwesRunComplete := call.RunID != ""
+	if outerOwesRunComplete {
+		for _, q := range queuedMessages {
+			if q.RunID == call.RunID {
+				outerOwesRunComplete = false
+				break
+			}
+		}
+	}
 	firstQueuedMessage := queuedMessages[0]
 	a.messageQueue.Set(call.SessionID, queuedMessages[1:])
+	// Reserve a fresh accept for the dequeued prompt before dropping the
+	// lock so acceptedRuns > 0 across the handoff into the recursive
+	// Run. This closes the window between this dequeue and the recursive
+	// Run registering its activeRequests entry: a cancel arriving in
+	// that window now records a pending cancel (acceptedRuns > 0) that
+	// the recursive Run's accepted path observes as cancel-on-entry.
+	firstQueuedMessage.Accepted = a.BeginAccepted(call.SessionID)
+	mu.Unlock()
+	if outerOwesRunComplete {
+		complete := notify.RunComplete{SessionID: call.SessionID, RunID: call.RunID}
+		if currentAssistant != nil {
+			complete.MessageID = currentAssistant.ID
+			complete.Text = currentAssistant.Content().String()
+		}
+		if ctx.Err() != nil {
+			complete.Cancelled = true
+		}
+		a.publishRunComplete(ctx, call, complete)
+	}
 	return a.Run(ctx, firstQueuedMessage)
 }
 
-func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions) error {
+func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
 	if a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
@@ -759,8 +1365,9 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.SupportsImages)
 
 	genCtx, cancel := context.WithCancel(ctx)
-	a.activeRequests.Set(sessionID, cancel)
-	defer a.activeRequests.Del(sessionID)
+	ac := &activeCancel{cancel: cancel}
+	a.activeRequests.Set(sessionID, ac)
+	defer a.activeRequests.CompareAndDelete(sessionID, ac)
 	defer cancel()
 	defer func() {
 		if flushErr := a.messages.FlushAll(ctx); flushErr != nil {
@@ -788,7 +1395,12 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	resp, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:          summaryPromptText,
 		Messages:        aiMsgs,
+		Headers:         sessionHeaders(sessionID),
 		ProviderOptions: opts,
+		OnAuthRefresh:   onAuthRefresh,
+		ModelProvider: func() fantasy.LanguageModel {
+			return a.largeModel.Get().Model
+		},
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			prepared.Messages = options.Messages
 			if systemPromptPrefix != "" {
@@ -847,6 +1459,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 			}
 			openrouterCost = &newCost
 		}
+		extractHyperCredits(step.ProviderMetadata)
 	}
 
 	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, openrouterCost, false)
@@ -895,8 +1508,21 @@ func (a *sessionAgent) getCacheControlOptions() fantasy.ProviderOptions {
 	}
 }
 
+// sessionHeaders returns the HTTP headers we use for cache affinity on
+// every LLM request for a given session.
+//
+// We use the session hash is used instead of the raw UUID so the header
+// value is deterministic and opaque.
+func sessionHeaders(sessionID string) map[string]string {
+	hash := session.HashID(sessionID)
+	return map[string]string{
+		"x-session-id":       hash,
+		"x-session-affinity": hash,
+	}
+}
+
 func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentCall) (message.Message, error) {
-	parts := []message.ContentPart{message.TextContent{Text: call.Prompt}}
+	parts := []message.ContentPart{message.TextContent{Text: call.Prompt, Hidden: call.HiddenUserMessage}}
 	var attachmentParts []message.ContentPart
 	for _, attachment := range call.Attachments {
 		attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.FilePath, MIMEType: attachment.MimeType, Data: attachment.Content})
@@ -924,21 +1550,49 @@ If not, please feel free to ignore. Again do not mention this message to the use
 			),
 		))
 	}
-	// Collect all tool call IDs present in assistant messages and all tool
-	// result IDs present in tool messages. This lets us detect both orphaned
-	// tool results (result without a call) and orphaned tool calls (call
-	// without a result).
+	// Collect all tool call IDs present in assistant messages, then index
+	// every tool result by its call ID. Tool results are re-emitted right
+	// after the assistant message that requested them instead of at their
+	// stored position: messages can be written to a session concurrently
+	// (e.g. resuming while a tool is still running), which interleaves
+	// user messages between a tool call and its result. LLM APIs require
+	// every tool call to be followed by its results before any other
+	// message, and strict-adjacency providers (e.g. Kimi, DeepSeek) reject
+	// the request otherwise, permanently locking the session.
 	knownToolCallIDs := make(map[string]struct{})
-	knownToolResultIDs := make(map[string]struct{})
 	for _, m := range msgs {
-		switch m.Role {
-		case message.Assistant:
-			for _, tc := range m.ToolCalls() {
-				knownToolCallIDs[tc.ID] = struct{}{}
-			}
-		case message.Tool:
-			for _, tr := range m.ToolResults() {
-				knownToolResultIDs[tr.ToolCallID] = struct{}{}
+		if m.Role != message.Assistant {
+			continue
+		}
+		for _, tc := range m.ToolCalls() {
+			knownToolCallIDs[tc.ID] = struct{}{}
+		}
+	}
+	toolResultsByCall := make(map[string][]fantasy.MessagePart)
+	for _, m := range msgs {
+		if m.Role != message.Tool {
+			continue
+		}
+		for _, aiMsg := range m.ToAIMessage() {
+			for _, part := range aiMsg.Content {
+				tr, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part)
+				if !ok {
+					// Tool-role ToAIMessage only emits ToolResultParts today;
+					// log so unexpected parts do not vanish silently.
+					slog.Warn(
+						"Dropping unexpected non-tool-result part from tool message",
+						"part_type", fmt.Sprintf("%T", part),
+					)
+					continue
+				}
+				if _, known := knownToolCallIDs[tr.ToolCallID]; !known {
+					slog.Warn(
+						"Dropping orphaned tool result with no matching tool call",
+						"tool_call_id", tr.ToolCallID,
+					)
+					continue
+				}
+				toolResultsByCall[tr.ToolCallID] = append(toolResultsByCall[tr.ToolCallID], part)
 			}
 		}
 	}
@@ -951,10 +1605,8 @@ If not, please feel free to ignore. Again do not mention this message to the use
 		if m.Role == message.Assistant && len(m.ToolCalls()) == 0 && m.Content().Text == "" && m.ReasoningContent().String() == "" {
 			continue
 		}
+		// Tool results are emitted right after their assistant message.
 		if m.Role == message.Tool {
-			if msg, ok := filterOrphanedToolResults(m, knownToolCallIDs); ok {
-				history = append(history, msg)
-			}
 			continue
 		}
 		aiMsgs := m.ToAIMessage()
@@ -967,16 +1619,17 @@ If not, please feel free to ignore. Again do not mention this message to the use
 		}
 		history = append(history, aiMsgs...)
 
-		if m.Role == message.Assistant {
-			if msg, ok := syntheticToolResultsForOrphanedCalls(m, knownToolResultIDs); ok {
-				history = append(history, msg)
-			}
+		if m.Role == message.Assistant && len(m.ToolCalls()) > 0 {
+			history = append(history, toolResultsForCalls(m, toolResultsByCall))
 		}
 	}
 
 	var files []fantasy.FilePart
 	for _, attachment := range attachments {
 		if attachment.IsText() {
+			continue
+		}
+		if !supportsImages {
 			continue
 		}
 		files = append(files, fantasy.FilePart{
@@ -1003,51 +1656,22 @@ func filterFileParts(parts []fantasy.MessagePart) []fantasy.MessagePart {
 	return filtered
 }
 
-// filterOrphanedToolResults converts a tool message to a fantasy.Message,
-// dropping any tool result parts whose tool_call_id has no matching tool call
-// in the known set. An orphaned result causes API validation to fail on every
-// subsequent turn, permanently locking the session. Returns the filtered
-// message and true if at least one valid part remains.
-func filterOrphanedToolResults(m message.Message, knownToolCallIDs map[string]struct{}) (fantasy.Message, bool) {
-	aiMsgs := m.ToAIMessage()
-	if len(aiMsgs) == 0 {
-		return fantasy.Message{}, false
-	}
-	var validParts []fantasy.MessagePart
-	for _, part := range aiMsgs[0].Content {
-		tr, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part)
-		if !ok {
-			validParts = append(validParts, part)
-			continue
-		}
-		if _, known := knownToolCallIDs[tr.ToolCallID]; known {
-			validParts = append(validParts, part)
-		} else {
-			slog.Warn(
-				"Dropping orphaned tool result with no matching tool call",
-				"tool_call_id", tr.ToolCallID,
-			)
-		}
-	}
-	if len(validParts) == 0 {
-		return fantasy.Message{}, false
-	}
-	msg := aiMsgs[0]
-	msg.Content = validParts
-	return msg, true
-}
-
-// syntheticToolResultsForOrphanedCalls returns a tool message containing
-// synthetic tool results for any tool calls in the assistant message that
-// have no matching result in knownToolResultIDs. LLM APIs require every
-// tool_use to be immediately followed by a tool_result; an interrupted
-// session can leave orphaned tool_use blocks that permanently lock the
-// conversation. Returns the message and true if any synthetic results were
-// produced.
-func syntheticToolResultsForOrphanedCalls(m message.Message, knownToolResultIDs map[string]struct{}) (fantasy.Message, bool) {
-	var syntheticParts []fantasy.MessagePart
+// toolResultsForCalls builds the tool message that must immediately follow
+// an assistant message with tool calls. LLM APIs require every tool call to
+// be followed by its results before any other message; strict-adjacency
+// providers reject the request otherwise. Results are taken from
+// toolResultsByCall and consumed, so a result stored in a message that also
+// holds results for calls of other assistant messages is emitted exactly
+// once, next to the assistant that requested it. Tool calls without any
+// stored result (e.g. an interrupted session) receive a synthetic error
+// response so the conversation keeps working.
+func toolResultsForCalls(m message.Message, toolResultsByCall map[string][]fantasy.MessagePart) fantasy.Message {
+	content := make([]fantasy.MessagePart, 0, len(m.ToolCalls()))
 	for _, tc := range m.ToolCalls() {
-		if _, hasResult := knownToolResultIDs[tc.ID]; hasResult {
+		parts := toolResultsByCall[tc.ID]
+		delete(toolResultsByCall, tc.ID)
+		if len(parts) > 0 {
+			content = append(content, parts...)
 			continue
 		}
 		slog.Warn(
@@ -1055,24 +1679,23 @@ func syntheticToolResultsForOrphanedCalls(m message.Message, knownToolResultIDs 
 			"tool_call_id", tc.ID,
 			"tool_name", tc.Name,
 		)
-		syntheticParts = append(syntheticParts, fantasy.ToolResultPart{
+		content = append(content, fantasy.ToolResultPart{
 			ToolCallID: tc.ID,
 			Output: fantasy.ToolResultOutputContentError{
 				Error: errors.New("tool call was interrupted and did not produce a result, you may retry this call if the result is still needed"),
 			},
 		})
 	}
-	if len(syntheticParts) == 0 {
-		return fantasy.Message{}, false
-	}
 	return fantasy.Message{
 		Role:    fantasy.MessageRoleTool,
-		Content: syntheticParts,
-	}, true
+		Content: content,
+	}
 }
 
 func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.Session) ([]message.Message, error) {
-	msgs, err := a.messages.List(ctx, session.ID)
+	// Read only the tail a compacted session actually sends. The full
+	// transcript can be tens of megabytes on the single shared connection.
+	msgs, err := a.messages.ListFromSummary(ctx, session.ID, session.SummaryMessageID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list messages: %w", err)
 	}
@@ -1093,20 +1716,44 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 	return msgs, nil
 }
 
-// generateTitle generates a session titled based on the initial prompt.
-func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, userPrompt string) {
+// hasUserTextMessage reports whether any user message in msgs contains
+// text content (as opposed to only shell commands or other non-text parts).
+func hasUserTextMessage(msgs []message.Message) bool {
+	for _, msg := range msgs {
+		if msg.Role != message.User {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if tc, ok := part.(message.TextContent); ok && tc.Text != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GenerateTitle generates a session title based on the initial prompt.
+func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, userPrompt string) {
 	if userPrompt == "" {
 		return
 	}
 
+	// Ensure the session always gets a title even if every path below
+	// fails or the context is cancelled before we finish.
+	var titleSaved bool
+	defer func() {
+		if !titleSaved {
+			fallbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := a.sessions.Rename(fallbackCtx, sessionID, DefaultSessionName); err != nil {
+				slog.Error("Failed to save fallback session title", "error", err)
+			}
+		}
+	}()
+
 	smallModel := a.smallModel.Get()
 	largeModel := a.largeModel.Get()
 	systemPromptPrefix := a.systemPromptPrefix.Get()
-
-	var maxOutputTokens int64 = 40
-	if smallModel.CatwalkCfg.CanReason {
-		maxOutputTokens = smallModel.CatwalkCfg.DefaultMaxTokens
-	}
 
 	newAgent := func(m fantasy.LanguageModel, p []byte, tok int64) fantasy.Agent {
 		return fantasy.NewAgent(
@@ -1118,7 +1765,8 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	}
 
 	streamCall := fantasy.AgentStreamCall{
-		Prompt: fmt.Sprintf("Generate a concise title for the following content:\n\n%s\n <think>\n\n</think>", userPrompt),
+		Prompt:  fmt.Sprintf("Generate a concise title for the following content:\n\n%s\n <think>\n\n</think>", userPrompt),
+		Headers: sessionHeaders(sessionID),
 		PrepareStep: func(callCtx context.Context, opts fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			prepared.Messages = opts.Messages
 			if systemPromptPrefix != "" {
@@ -1130,41 +1778,40 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		},
 	}
 
-	// Use the small model to generate the title.
-	model := smallModel
-	agent := newAgent(model.Model, titlePrompt, maxOutputTokens)
-	resp, err := agent.Stream(ctx, streamCall)
-	if err == nil {
-		// We successfully generated a title with the small model.
-		slog.Debug("Generated title with small model")
-	} else {
-		// It didn't work. Let's try with the big model.
-		slog.Error("Error generating title with small model; trying big model", "err", err)
-		model = largeModel
-		agent = newAgent(model.Model, titlePrompt, maxOutputTokens)
-		resp, err = agent.Stream(ctx, streamCall)
-		if err == nil {
-			slog.Debug("Generated title with large model")
-		} else {
-			// Welp, the large model didn't work either. Use the default
-			// session name and return.
-			slog.Error("Error generating title with large model", "err", err)
-			saveErr := a.sessions.Rename(ctx, sessionID, DefaultSessionName)
-			if saveErr != nil {
-				slog.Error("Failed to save session title", "error", saveErr)
-			}
-			return
-		}
+	type modelAttempt struct {
+		name  string
+		model Model
+	}
+	attempts := []modelAttempt{
+		{"small", smallModel},
+		{"large", largeModel},
 	}
 
-	if resp == nil {
-		// Actually, we didn't get a response so we can't. Use the default
-		// session name and return.
-		slog.Error("Response is nil; can't generate title")
-		saveErr := a.sessions.Rename(ctx, sessionID, DefaultSessionName)
-		if saveErr != nil {
-			slog.Error("Failed to save session title", "error", saveErr)
+	var resp *fantasy.AgentResult
+	var err error
+	var model Model
+	var success bool
+	for _, attempt := range attempts {
+		tok := int64(40)
+		if attempt.model.CatwalkCfg.CanReason {
+			tok = attempt.model.CatwalkCfg.DefaultMaxTokens
 		}
+		agent := newAgent(attempt.model.Model, titlePrompt, tok)
+		resp, err = agent.Stream(ctx, streamCall)
+		if err == nil && resp.Response.FinishReason != fantasy.FinishReasonLength {
+			model = attempt.model
+			slog.Debug("Generated title with " + attempt.name + " model")
+			success = true
+			break
+		}
+		if err != nil {
+			slog.Error("Error generating title with "+attempt.name+" model; trying next", "err", err)
+		} else {
+			slog.Error("Title generation hit token limit with " + attempt.name + " model; trying next")
+		}
+	}
+	if !success {
+		// The deferred fallback will save the default session name.
 		return
 	}
 
@@ -1177,7 +1824,17 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	title = orphanThinkTagRegex.ReplaceAllString(title, "")
 
 	title = strings.TrimSpace(title)
-	title = cmp.Or(title, DefaultSessionName)
+	if title == "" {
+		// LLM returned empty content. Use the prompt itself as a
+		// fallback title, truncated to 50 chars, before resorting to
+		// the generic default.
+		fallback := strings.ReplaceAll(userPrompt, "\n", " ")
+		fallback = strings.TrimSpace(fallback)
+		if len(fallback) > 50 {
+			fallback = ansi.Truncate(fallback, 50, "…")
+		}
+		title = cmp.Or(fallback, DefaultSessionName)
+	}
 
 	// Calculate usage and cost.
 	var openrouterCost *float64
@@ -1190,6 +1847,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 			}
 			openrouterCost = &newCost
 		}
+		extractHyperCredits(step.ProviderMetadata)
 	}
 
 	modelConfig := model.CatwalkCfg
@@ -1218,6 +1876,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		slog.Error("Failed to save session title and usage", "error", saveErr)
 		return
 	}
+	titleSaved = true
 }
 
 func (a *sessionAgent) openrouterCost(metadata fantasy.ProviderMetadata) *float64 {
@@ -1231,6 +1890,70 @@ func (a *sessionAgent) openrouterCost(metadata fantasy.ProviderMetadata) *float6
 		return nil
 	}
 	return &opts.Usage.Cost
+}
+
+// extractHyperCredits reads usage.remaining.hypercredits from OpenAI
+// provider metadata and stores it for the next FetchCredits call.
+func extractHyperCredits(metadata fantasy.ProviderMetadata) {
+	openaiMeta, ok := metadata[openai.Name]
+	if !ok {
+		return
+	}
+	pm, ok := openaiMeta.(*openai.ProviderMetadata)
+	if !ok {
+		return
+	}
+	var remaining struct {
+		Hypercredits float64 `json:"hypercredits"`
+	}
+	if pm.ExtraField("remaining", &remaining) && remaining.Hypercredits > 0 {
+		hyper.SetBalance(int(math.Round(remaining.Hypercredits)))
+	}
+}
+
+// extractPrismModel returns the ID and name of the model that actually
+// served the turn, as reported by the Hyper Prism model router headers,
+// or empty strings when the turn was not routed through a Prism model.
+func extractPrismModel(metadata fantasy.ProviderMetadata) (modelID, modelName string) {
+	openaiMeta, ok := metadata[openai.Name]
+	if !ok {
+		return "", ""
+	}
+	pm, ok := openaiMeta.(*openai.ProviderMetadata)
+	if !ok {
+		return "", ""
+	}
+	_ = pm.ExtraField(hyper.PrismModelIDField, &modelID)
+	_ = pm.ExtraField(hyper.PrismModelNameField, &modelName)
+	return modelID, modelName
+}
+
+// extractPrismSavings returns the hypercredit and dollar savings from
+// routing the turn through the Hyper Prism model router, as reported by
+// its savings trailers, or nil when not reported or malformed.
+func extractPrismSavings(metadata fantasy.ProviderMetadata) (hypercredits, dollars *float64) {
+	openaiMeta, ok := metadata[openai.Name]
+	if !ok {
+		return nil, nil
+	}
+	pm, ok := openaiMeta.(*openai.ProviderMetadata)
+	if !ok {
+		return nil, nil
+	}
+	return extraFieldFloat(pm, hyper.PrismHypercreditSavingsField), extraFieldFloat(pm, hyper.PrismDollarSavingsField)
+}
+
+func extraFieldFloat(pm *openai.ProviderMetadata, key string) *float64 {
+	var value string
+	if !pm.ExtraField(key, &value) {
+		return nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		slog.Warn("Could not parse Prism savings", "key", key, "value", value, "error", err)
+		return nil
+	}
+	return &parsed
 }
 
 func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) {
@@ -1283,31 +2006,65 @@ func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message
 }
 
 func (a *sessionAgent) Cancel(sessionID string) {
+	// Serialize against the dispatch handoff in Run so the accepted ->
+	// (cancel-on-entry | queued | active) transition is atomic against
+	// this cancel. Every cancel observes at least one of: an active
+	// request, an accepted run (recorded as a pending cancel), or a
+	// queue entry it then clears. If none of those hold, an idle Escape
+	// is a true no-op and must not poison the next prompt.
+	mu := a.sessionMu(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Cancel regular requests. Don't use Take() here - we need the entry to
 	// remain in activeRequests so IsBusy() returns true until the goroutine
 	// fully completes (including error handling that may access the DB).
 	// The defer in processRequest will clean up the entry.
-	if cancel, ok := a.activeRequests.Get(sessionID); ok && cancel != nil {
+	if ac, ok := a.activeRequests.Get(sessionID); ok && ac != nil {
 		slog.Debug("Request cancellation initiated", "session_id", sessionID)
-		cancel()
+		ac.cancel()
 	}
 
 	// Also check for summarize requests.
-	if cancel, ok := a.activeRequests.Get(sessionID + "-summarize"); ok && cancel != nil {
+	if ac, ok := a.activeRequests.Get(sessionID + "-summarize"); ok && ac != nil {
 		slog.Debug("Summarize cancellation initiated", "session_id", sessionID)
-		cancel()
+		ac.cancel()
+	}
+
+	// Record a pending cancel only when a dispatched-but-not-yet-active
+	// run exists. This catches runs still in the goroutine scheduler or
+	// about to enter Run's busy-queue branch, while leaving an idle
+	// session untouched. Active and accepted are not mutually exclusive:
+	// when a run is active and a follow-up has been accepted, both the
+	// cancel above and this pending record fire.
+	//
+	// Raise the session's cancel mark to the latest accept sequence
+	// assigned so far. Every prompt currently accepted-but-not-yet-
+	// active has a sequence at or below that value, so one cancel covers
+	// all of them; a prompt accepted after this cancel gets a strictly
+	// higher sequence and is never poisoned. Using max keeps repeated
+	// cancels idempotent while the same prompts are in flight and lets a
+	// later cancel extend coverage to prompts accepted since.
+	a.acceptedMu.Lock()
+	count, ok := a.acceptedRuns.Get(sessionID)
+	mark := a.acceptSeqGen
+	a.acceptedMu.Unlock()
+	if ok && count > 0 {
+		slog.Debug("Recording cancel mark for accepted runs", "session_id", sessionID, "count", count, "mark", mark)
+		existing, _ := a.cancelMark.Get(sessionID)
+		a.cancelMark.Set(sessionID, max(existing, mark))
 	}
 
 	if a.QueuedPrompts(sessionID) > 0 {
 		slog.Debug("Clearing queued prompts", "session_id", sessionID)
-		a.messageQueue.Del(sessionID)
+		a.clearQueueAndNotify(sessionID)
 	}
 }
 
 func (a *sessionAgent) ClearQueue(sessionID string) {
 	if a.QueuedPrompts(sessionID) > 0 {
 		slog.Debug("Clearing queued prompts", "session_id", sessionID)
-		a.messageQueue.Del(sessionID)
+		a.clearQueueAndNotify(sessionID)
 	}
 }
 
@@ -1332,8 +2089,8 @@ func (a *sessionAgent) CancelAll() {
 
 func (a *sessionAgent) IsBusy() bool {
 	var busy bool
-	for cancelFunc := range a.activeRequests.Seq() {
-		if cancelFunc != nil {
+	for ac := range a.activeRequests.Seq() {
+		if ac != nil {
 			busy = true
 			break
 		}
@@ -1456,6 +2213,8 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 		return messages
 	}
 
+	supportsImages := largeModel.CatwalkCfg.SupportsImages
+
 	convertedMessages := make([]fantasy.Message, 0, len(messages))
 
 	for _, msg := range messages {
@@ -1475,6 +2234,21 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 			}
 
 			if media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](toolResult.Output); ok {
+				if !supportsImages {
+					// Model cannot process images. Replace with a text
+					// placeholder and skip creating a synthetic user
+					// message with FilePart, which would brick the
+					// session on text-only models.
+					textParts = append(textParts, fantasy.ToolResultPart{
+						ToolCallID: toolResult.ToolCallID,
+						Output: fantasy.ToolResultOutputContentText{
+							Text: "[Image/media content not supported by this model]",
+						},
+						ProviderOptions: toolResult.ProviderOptions,
+					})
+					continue
+				}
+
 				decoded, err := base64.StdEncoding.DecodeString(media.Data)
 				if err != nil {
 					slog.Warn("Failed to decode media data", "error", err)
@@ -1546,4 +2320,21 @@ func providerRetryLogFields(err *fantasy.ProviderError, delay time.Duration) []a
 		fields = append(fields, "message", err.Message)
 	}
 	return fields
+}
+
+// sanitizeToolInput validates tool call JSON from the provider.
+// Malformed input is replaced with an empty object to prevent
+// stuck conversations from truncated or malformed model output.
+// The second return value indicates whether sanitization occurred.
+func sanitizeToolInput(toolName, toolCallID, input string) (string, bool) {
+	if !json.Valid([]byte(input)) {
+		slog.Warn(
+			"Malformed tool call JSON from provider, replacing with empty object",
+			"tool", toolName,
+			"id", toolCallID,
+			"input_len", len(input),
+		)
+		return "{}", true
+	}
+	return input, false
 }

@@ -72,7 +72,7 @@ func TestSetupSubscriber_ContextCancellation(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("setupSubscriber goroutine did not exit after context cancellation")
+		t.Fatal("subscribe goroutine did not exit after context cancellation")
 	}
 }
 

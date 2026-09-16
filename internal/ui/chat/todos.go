@@ -70,7 +70,7 @@ func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 		ratio := sty.Tool.TodoRatio.Render(fmt.Sprintf("%d/%d", completedCount, len(params.Todos)))
 		headerText = ratio
 		if inProgressTask != "" {
-			headerText = fmt.Sprintf("%s · %s", ratio, inProgressTask)
+			headerText = ratio + sty.Tool.TodoStatusNote.Render(" · "+inProgressTask)
 		}
 
 		// If we have metadata, use it for richer display.
@@ -119,7 +119,7 @@ func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 	}
 
 	toolParams := []string{headerText}
-	header := toolHeader(sty, opts.Status, "To-Do", cappedWidth, opts.Compact, toolParams...)
+	header := toolHeader(sty, opts.Status, "To-Do", cappedWidth, opts, toolParams...)
 	if opts.Compact {
 		return header
 	}
