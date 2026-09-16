@@ -58,6 +58,7 @@ type quickStyleOpts struct {
 	successMostSubtle color.Color
 	yolo              color.Color
 	plan              color.Color
+	planMoreSubtle    color.Color
 
 	// ANSI 16-color palette. These remap the basic terminal colors that
 	// programs emit (e.g. bang-mode shell output) onto legible, on-brand
@@ -1084,7 +1085,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Status.ModeBadgePlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.primary).Padding(0, 1).Bold(true).SetString("PLAN MODE")
 	s.Status.ModeBadgeYolo = lipgloss.NewStyle().Foreground(o.bgBase).Background(o.busy).Padding(0, 1).Bold(true).SetString("YOLO MODE")
 	s.Status.ModeBannerPlanBadge = s.Status.ModeBadgePlan
-	s.Status.ModeBannerPlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.plan).Padding(0, 1)
+	s.Status.ModeBannerPlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.planMoreSubtle).Padding(0, 1)
 	s.Status.ModeBannerYoloBadge = s.Status.ModeBadgeYolo
 	s.Status.ModeBannerYolo = lipgloss.NewStyle().Foreground(o.bgBase).Background(o.yolo).Padding(0, 1)
 	s.Status.SuccessIndicator = base.Foreground(o.bgLessVisible).Background(o.success).Padding(0, 1).Bold(true).SetString("OKAY!")
