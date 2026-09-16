@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/message"
@@ -62,6 +61,7 @@ func TestContinuationFailurePausesGoal(t *testing.T) {
 	t.Parallel()
 	for _, err := range []error{errors.New("provider unavailable"), context.Canceled, context.DeadlineExceeded} {
 		t.Run(err.Error(), func(t *testing.T) {
+			t.Parallel()
 			store := &runtimeStore{goal: &Goal{SessionID: "session", GoalID: "goal", Status: GoalActive}}
 			runner := &runtimeAgent{err: err}
 			runtime := NewRuntime(store, runner, nil)
@@ -98,7 +98,10 @@ func TestTurnStopped(t *testing.T) {
 		{name: "tool halt", result: &fantasy.AgentResult{Response: fantasy.Response{FinishReason: fantasy.FinishReasonStop, Content: fantasy.ResponseContent{fantasy.ToolResultContent{StopTurn: true}}}}, stopped: true},
 		{name: "unknown stop", result: &fantasy.AgentResult{}, stopped: true},
 	} {
-		t.Run(tt.name, func(t *testing.T) { require.Equal(t, tt.stopped, turnStopped(tt.result, tt.err)) })
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.stopped, turnStopped(tt.result, tt.err))
+		})
 	}
 }
 
@@ -121,6 +124,7 @@ func TestGoalPauseAndClearCancelRunningContinuation(t *testing.T) {
 	}
 
 	t.Run("pause", func(t *testing.T) {
+		t.Parallel()
 		runtime, runner, done := startTurn(t)
 		_, err := runtime.Pause(t.Context(), "session")
 		require.NoError(t, err)
@@ -130,6 +134,7 @@ func TestGoalPauseAndClearCancelRunningContinuation(t *testing.T) {
 	})
 
 	t.Run("clear", func(t *testing.T) {
+		t.Parallel()
 		runtime, runner, done := startTurn(t)
 		_, err := runtime.Clear(t.Context(), "session")
 		require.NoError(t, err)
