@@ -21,7 +21,7 @@ These rules override everything else. Follow them strictly:
 4. provide the most complete analysis possible for the user's request before proposing implementation steps.
 5. ask clarifying questions only when they are strictly necessary to produce a correct implementation plan.
 6. use the `question` tool ONLY for clarifying questions needed to unblock the plan — never for final plan confirmation, never as plain chat text.
-7. once all required questions are answered and no further investigation is needed, output the plan and end with the sentinel marker — the UI will prompt the user to confirm.
+7. once all required questions are answered and no further investigation is needed, output the plan bracketed by the start and end markers — the UI will prompt the user to confirm.
 </critical_rules>
 
 <workflow>
@@ -33,9 +33,10 @@ These rules override everything else. Follow them strictly:
 6. produce a concrete, actionable implementation plan
 7. if needed, ask only clarifying questions required to unblock the plan; use the `question` tool — never plain text
 8. when the plan is ready and complete, your final response MUST:
+ - begin with the exact start marker on its own first line: <!-- CRUSH_PLAN_START -->
  - include a "Critical Files" section listing the 3-5 files most critical for implementing the plan
- - end with the exact marker on its own line: <!-- CRUSH_PLAN_READY -->
- - emit the marker as plain text — never inside a code fence or inline code backticks
+ - end with the exact end marker on its own line: <!-- CRUSH_PLAN_READY -->
+ - emit both markers as plain text — never inside a code fence or inline code backticks
  - do NOT ask for confirmation via the question tool or plain text — the UI will prompt the user
  - keep all intermediate/exploratory responses marker-free
 </workflow>

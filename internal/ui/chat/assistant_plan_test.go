@@ -112,23 +112,32 @@ func TestAssistantMessageItem_PlanStreamingCardIsOpenUntilMarker(t *testing.T) {
 		}
 	}
 
-	streaming := NewAssistantMessageItem(&sty, mk("# Plan\n\nIn progress", false)).(*AssistantMessageItem)
+	streaming := NewAssistantMessageItem(&sty, mk("<!-- CRUSH_PLAN_START -->\n\n# Plan\n\nIn progress", false)).(*AssistantMessageItem)
 	streaming.SetPlanAgent(true)
 	got := streaming.RawRender(72)
 	require.Contains(t, got, "╭", "streaming plan must draw the top border")
 	require.Contains(t, got, "│", "streaming plan must draw the side borders")
 	require.NotContains(t, got, "╰", "streaming plan must withhold the bottom border")
+	require.NotContains(t, got, "CRUSH_PLAN_START", "the start marker must be stripped from the card")
 
-	done := NewAssistantMessageItem(&sty, mk("# Plan\n\nDone\n\n<!-- CRUSH_PLAN_READY -->", true)).(*AssistantMessageItem)
+	done := NewAssistantMessageItem(&sty, mk("<!-- CRUSH_PLAN_START -->\n\n# Plan\n\nDone\n\n<!-- CRUSH_PLAN_READY -->", true)).(*AssistantMessageItem)
 	done.SetPlanAgent(true)
 	closed := done.RawRender(72)
 	require.Contains(t, closed, "╭", "finished plan must draw the top border")
 	require.Contains(t, closed, "╰", "finished plan must close the bottom border")
+	require.NotContains(t, closed, "CRUSH_PLAN_START", "the start marker must be stripped from the card")
 
-	interrupted := NewAssistantMessageItem(&sty, mk("Let me look around.", true)).(*AssistantMessageItem)
+	intermediate := NewAssistantMessageItem(&sty, mk("Let me look around.", false)).(*AssistantMessageItem)
+	intermediate.SetPlanAgent(true)
+	plain := intermediate.RawRender(72)
+	require.NotContains(t, plain, "╭", "an intermediate plan-mode reply must not render a card")
+	require.NotContains(t, plain, "│", "an intermediate plan-mode reply must not draw side borders")
+
+	interrupted := NewAssistantMessageItem(&sty, mk("<!-- CRUSH_PLAN_START -->\n\nHalf a plan", true)).(*AssistantMessageItem)
 	interrupted.SetPlanAgent(true)
-	plain := interrupted.RawRender(72)
-	require.NotContains(t, plain, "╭", "a finished message without the marker must not render a card")
+	cut := interrupted.RawRender(72)
+	require.NotContains(t, cut, "╭", "a plan that never reached the ready marker must not render a card")
+	require.NotContains(t, cut, "CRUSH_PLAN_START", "the start marker must not leak into rendered output")
 }
 
 func TestAssistantMessageItem_NonPlanRepliesHaveNoPlanCard(t *testing.T) {

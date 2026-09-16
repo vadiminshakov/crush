@@ -59,3 +59,32 @@ func TestStripPlanReadyMarker(t *testing.T) {
 		"plan\n```go\nfmt.Println(1)\n```",
 		StripPlanReadyMarker("plan\n```go\nfmt.Println(1)\n```\n"+PlanReadyMarker))
 }
+
+func TestPlanStartMarkerPresent(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, PlanStartMarkerPresent(PlanStartMarker+"\nplan"))
+	require.True(t, PlanStartMarkerPresent("note\n  "+PlanStartMarker+"  \nplan"))
+	// Inline-code backticks around the marker still count.
+	require.True(t, PlanStartMarkerPresent("`"+PlanStartMarker+"`\nplan"))
+	require.False(t, PlanStartMarkerPresent("plan without marker"))
+	require.False(t, PlanStartMarkerPresent("It begins with "+PlanStartMarker+" on its own line."))
+	// The ready marker must not satisfy the start check.
+	require.False(t, PlanStartMarkerPresent("plan\n"+PlanReadyMarker))
+}
+
+func TestStripPlanMarkers(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t,
+		"plan",
+		StripPlanMarkers(PlanStartMarker+"\nplan\n"+PlanReadyMarker))
+	// A start marker whose ready companion never arrived (interrupted
+	// plan) is stripped on its own.
+	require.Equal(t,
+		"half a plan",
+		StripPlanMarkers(PlanStartMarker+"\nhalf a plan"))
+	// Only the start marker is removed; prose mentions stay untouched.
+	prose := "The plan begins with " + PlanStartMarker + "."
+	require.Equal(t, prose, StripPlanMarkers(prose))
+}

@@ -185,9 +185,10 @@ type AssistantMessageItem struct {
 	thinkingBoxHeight int // Tracks the rendered thinking box height for click detection.
 
 	// planAgent marks this item as plan-agent output. While the plan
-	// streams (the message is not finished), the content renders as
-	// an open plan card: top and side borders only, with the bottom
-	// border withheld until the plan-ready marker lands.
+	// streams (the message is not finished) and the plan-start marker
+	// has arrived, the content renders as an open plan card: top and
+	// side borders only, with the bottom border withheld until the
+	// plan-ready marker lands.
 	planAgent bool
 
 	// Incremental FNV-64a hash of the thinking text. Avoids
@@ -509,8 +510,8 @@ func (a *AssistantMessageItem) contentKey() (uint64, uint64) {
 }
 
 // SetPlanAgent flags this item as plan-agent output (or clears the
-// flag). The flag drives the open plan card shown while the plan
-// streams.
+// flag). The flag scopes plan-card rendering to plan mode; the plan
+// start marker decides which message is the plan.
 func (a *AssistantMessageItem) SetPlanAgent(plan bool) {
 	if a.planAgent == plan {
 		return
@@ -572,15 +573,18 @@ func (a *AssistantMessageItem) cachedContent(width int) string {
 	// the plan stands out from regular assistant replies. Mirrors the
 	// ThinkingBox treatment.
 	var out string
-	if common.PlanReadyMarkerPresent(text) {
-		out = a.renderPlanCard(common.StripPlanReadyMarker(text), width)
-	} else if a.planStreaming() {
+	switch {
+	case common.PlanReadyMarkerPresent(text):
+		out = a.renderPlanCard(common.StripPlanMarkers(text), width)
+	case a.planStreaming() && common.PlanStartMarkerPresent(text):
 		// While the plan streams, draw the card as an open box: top
 		// and side borders only. The bottom border closes once the
-		// plan-ready marker arrives.
-		out = a.renderPlanCardStreaming(text, width)
-	} else {
-		out = a.renderMarkdown(text, width)
+		// plan-ready marker arrives. The plan-start marker gates the
+		// card so intermediate exploratory replies in plan mode never
+		// grow a border.
+		out = a.renderPlanCardStreaming(common.StripPlanMarkers(text), width)
+	default:
+		out = a.renderMarkdown(common.StripPlanMarkers(text), width)
 	}
 	a.contentSec.store(width, srcHash, extra, out, 0)
 	return out
