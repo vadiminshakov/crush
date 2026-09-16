@@ -122,6 +122,20 @@ func (s *service) UpdateStatus(ctx context.Context, sessionID string, goalID str
 
 	qtx := s.q.WithTx(tx)
 
+	// A cancellation racing the completion tool must not reopen a finished goal.
+	if status == GoalPaused {
+		current, err := qtx.GetGoalBySessionID(ctx, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("getting goal before pause: %w", err)
+		}
+		if current.GoalID != goalID {
+			return nil, fmt.Errorf("goal not found or stale goal ID")
+		}
+		if GoalStatus(current.Status) == GoalComplete {
+			return s.fromDBItem(current), nil
+		}
+	}
+
 	if status != GoalActive {
 		if err := qtx.AccumulateActiveTime(ctx, sessionID); err != nil {
 			return nil, fmt.Errorf("accumulating active time: %w", err)

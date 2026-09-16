@@ -308,7 +308,22 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 // Accepted so sessionAgent.Run can consume the accept reservation under
 // dispatchMu; when nil (the in-process/local path) no accept tracking
 // applies.
-func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (result *fantasy.AgentResult, retErr error) {
+	if c.goalRuntime != nil {
+		c.goalRuntime.BeginTurn(sessionID)
+	}
+	defer func() {
+		failure := recover()
+		if failure != nil {
+			retErr = fmt.Errorf("agent panicked: %v", failure)
+		}
+		if c.goalRuntime != nil {
+			c.goalRuntime.AfterTurn(ctx, sessionID, result, retErr)
+		}
+		if failure != nil {
+			panic(failure)
+		}
+	}()
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -418,14 +433,6 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 			Type:       notify.TypeReAuthenticate,
 			ProviderID: model.ModelCfg.Provider,
 		})
-	}
-
-	if originalErr == nil && c.goalRuntime != nil {
-		go func() {
-			c.goalRuntime.OnTurnFinished(context.Background(), sessionID)
-		}()
-	} else {
-		slog.Warn("Goal continuation skipped due to agent error; use /goal resume to continue", "session_id", sessionID, "error", originalErr)
 	}
 
 	if hasLatest && c.runComplete != nil {
@@ -1379,10 +1386,18 @@ func (c *coordinator) BeginAccepted(sessionID string) *AcceptedRun {
 }
 
 func (c *coordinator) Cancel(sessionID string) {
+	if c.goalRuntime != nil {
+		if _, err := c.goalRuntime.Pause(context.Background(), sessionID); err != nil {
+			slog.Error("Failed to pause goal during cancellation", "session_id", sessionID, "error", err)
+		}
+	}
 	c.currentAgent().Cancel(sessionID)
 }
 
 func (c *coordinator) CancelAll() {
+	if c.goalRuntime != nil {
+		c.goalRuntime.Stop(context.Background())
+	}
 	c.currentAgent().CancelAll()
 }
 
