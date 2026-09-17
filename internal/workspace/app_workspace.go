@@ -270,28 +270,18 @@ func (w *AppWorkspace) GoalSet(ctx context.Context, sessionID, objective string)
 }
 
 func (w *AppWorkspace) GoalPause(ctx context.Context, sessionID string) (*goal.Goal, error) {
-	g, err := w.app.GoalService.Get(ctx, sessionID)
-	if err != nil || g == nil {
-		return nil, err
+	g, err := w.app.GoalRuntime.Pause(ctx, sessionID)
+	if g != nil {
+		w.AgentCancel(sessionID)
 	}
-	return w.app.GoalService.UpdateStatus(ctx, sessionID, g.GoalID, goal.GoalPaused)
+	return g, err
 }
 
 func (w *AppWorkspace) GoalResume(ctx context.Context, sessionID string) (*goal.Goal, error) {
-	g, err := w.app.GoalService.Get(ctx, sessionID)
-	if err != nil || g == nil {
-		return nil, err
+	if w.AgentIsBusy() {
+		return nil, errors.New("agent is still stopping; wait before resuming the goal")
 	}
-	updated, err := w.app.GoalService.UpdateStatus(ctx, sessionID, g.GoalID, goal.GoalActive)
-	if err != nil {
-		return nil, err
-	}
-	go func() {
-		if err := w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID); err != nil {
-			slog.Error("Goal continuation failed after resume", "session_id", sessionID, "error", err)
-		}
-	}()
-	return updated, nil
+	return w.app.GoalRuntime.Resume(ctx, sessionID)
 }
 
 func (w *AppWorkspace) GoalStart(ctx context.Context, sessionID string) error {
@@ -304,7 +294,11 @@ func (w *AppWorkspace) GoalStart(ctx context.Context, sessionID string) error {
 }
 
 func (w *AppWorkspace) GoalClear(ctx context.Context, sessionID string) (*goal.Goal, error) {
-	return w.app.GoalService.Clear(ctx, sessionID)
+	g, err := w.app.GoalRuntime.Clear(ctx, sessionID)
+	if g != nil {
+		w.AgentCancel(sessionID)
+	}
+	return g, err
 }
 
 // -- Permissions --
