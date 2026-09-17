@@ -1,0 +1,62 @@
+internal/workspace/app_workspace.go
+  s_ac7bde9454c592::t_944e0ec32c1489 296-297
+internal/goal/goal_test.go
+  s_ac7bde9454c592::t_6220cb920c4120 11-15,17,20-22,25-26,28,31,34-35,37,39
+  s_55c09b4916483c::t_469077f6e2db77 1-10,16,18-19,23-24,27,29-30,32-33,36,38,40
+internal/goal/runtime_test.go
+  s_ac7bde9454c592::t_944e0ec32c1489 76,79-81,142
+  s_ac7bde9454c592::t_8503ad012d0fe0 150-162
+internal/workspace/client_workspace.go
+  s_ac7bde9454c592::t_944e0ec32c1489 360
+internal/db/goals.sql.go
+  s_ac7bde9454c592::t_dfc0015a2359e3 73,75,78-81,83-88
+  s_55c09b4916483c::t_2e6a09dc762ddc 82
+internal/db/querier.go
+  s_ac7bde9454c592::t_dfc0015a2359e3 18
+internal/db/sql/goals.sql
+  s_ac7bde9454c592::t_944e0ec32c1489 41,43
+internal/goal/goal.go
+  s_944c2335733d6c::t_ac1e151924a18b 186
+  s_ac7bde9454c592::t_944e0ec32c1489 43,169,177-181,184-185
+  s_ac7bde9454c592::t_4d3dc72ca49870 91-95
+  s_ac7bde9454c592::t_1ef4396c5c83d9 96
+internal/ui/model/goal.go
+  s_ac7bde9454c592::t_944e0ec32c1489 110-113,119
+internal/workspace/workspace.go
+  s_ac7bde9454c592::t_944e0ec32c1489 170
+internal/goal/runtime.go
+  s_ac7bde9454c592::t_7a0a65a1d6f6b9 88-91
+  s_ac7bde9454c592::t_944e0ec32c1489 84,87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e97ba9d0d3c0fd8b30b9cedbb1e214d8127c3f41",
+  "prompts": {},
+  "sessions": {
+    "s_55c09b4916483c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7b66b18-bd43-4fc6-bc05-69665a84e74b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_944c2335733d6c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0afde-5050-71b3-94ac-61a65934de30",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_ac7bde9454c592": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b141-c7f0-7b30-bb12-a4b831aa7f30",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
