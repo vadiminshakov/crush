@@ -1,0 +1,19 @@
+internal/agent/goal_lifecycle_test.go
+  s_006c12417d8d19::t_7990d7351d81ad 1-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "81e12f1e97af515f2eef4b23f4222aec0eb46791",
+  "prompts": {},
+  "sessions": {
+    "s_006c12417d8d19": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0abcc-8428-7482-ae8f-466d2ed5767d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
