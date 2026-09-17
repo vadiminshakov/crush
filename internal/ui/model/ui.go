@@ -118,6 +118,7 @@ type uiInputMode uint8
 const (
 	uiInputModeCode uiInputMode = iota
 	uiInputModePlan
+	uiInputModeGoal
 )
 
 type openEditorMsg struct {
@@ -242,10 +243,6 @@ type UI struct {
 	// modeSwitching is true while the async agent-model update kicked off
 	// by setInputMode is still in flight; sending is blocked meanwhile.
 	modeSwitching bool
-
-	// cycleYolo is true while YOLO was enabled by the Shift+Tab input-mode
-	// cycle, which is the only case where the cycle may disable it again.
-	cycleYolo bool
 
 	keyMap KeyMap
 	keyenh tea.KeyboardEnhancementsMsg
@@ -839,14 +836,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.forceCompactMode {
 			m.isCompact = true
 		}
-		// Plan mode is scoped to the session it was enabled in: switching
-		// to another session falls back to code mode and drops any pending
-		// plan handoff. (Loading the session that was just created for the
-		// first plan-mode prompt is not a switch; the IDs match then.)
+		// Leave the previous session's plan or goal mode before restoring
+		// this session's goal. Loading a newly created session is not a
+		// switch because the IDs already match.
+		var resetMode tea.Cmd
 		if m.session == nil || m.session.ID != msg.session.ID {
-			if cmd := m.resetPlanModeState(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+			resetMode = m.resetPlanModeState()
 		}
 		m.setState(uiChat, m.focus)
 		m.session = msg.session
@@ -854,19 +849,13 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebarOffset = 0
 		m.sessionFiles = msg.files
 		sessionID := msg.session.ID
-		cmds = append(cmds, func() tea.Msg {
+		cmds = append(cmds, tea.Sequence(resetMode, func() tea.Msg {
 			g, err := m.com.Workspace.GoalGet(context.Background(), sessionID)
 			if err != nil || g == nil {
 				return nil
 			}
-			if g.Status == goal.GoalActive {
-				_ = m.com.Workspace.GoalStart(context.Background(), sessionID)
-			}
-			return pubsub.Event[goal.Goal]{
-				Type:    pubsub.UpdatedEvent,
-				Payload: *g,
-			}
-		})
+			return loadedGoalMsg{goal: g}
+		}))
 		// Session switch: the memoized busy state and queued prompts
 		// belong to the previous session. Drop them and re-fetch
 		// off-thread so the queue pill and esc behavior track the new
@@ -920,6 +909,23 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.startLSPs(paths))
 
+	case loadedGoalMsg:
+		cmds = append(cmds, m.applyLoadedGoal(msg)...)
+		m.updateLayoutAndSize()
+	case goalSessionCreatedMsg:
+		if msg.err != nil {
+			m.modeSwitching = false
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		m.session = &msg.session
+		if m.forceCompactMode {
+			m.isCompact = true
+		}
+		m.setState(uiChat, m.focus)
+		cmds = append(cmds, tea.Sequence(m.reportCurrentSession(msg.session.ID), m.createGoal(msg.session.ID, msg.objective)))
+	case goalCreatedMsg:
+		cmds = append(cmds, m.applyGoalCreated(msg)...)
 	case modeSwitchedMsg:
 		m.modeSwitching = false
 		cmds = append(cmds, m.applyModeSwitch(msg)...)
@@ -982,6 +988,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, m.todoSpinner.Tick)
 				}
 			}
+			m.randomizePlaceholders()
 			m.updateLayoutAndSize()
 		}
 	case pubsub.Event[session.Session]:
@@ -1543,10 +1550,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Placeholder = m.workingPlaceholder
 		} else if m.mode == uiInputModePlan {
 			m.textarea.Placeholder = "Let's plan"
+		} else if m.mode == uiInputModeGoal {
+			m.textarea.Placeholder = "Go autonomous"
 		} else {
 			m.textarea.Placeholder = m.readyPlaceholder
 		}
-		if !m.bangMode && m.mode != uiInputModePlan && m.yoloModeCached() {
+		if !m.bangMode && m.mode != uiInputModePlan && m.mode != uiInputModeGoal && m.yoloModeCached() {
 			m.textarea.Placeholder = "Go crazy"
 		}
 	}
@@ -2103,15 +2112,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 	// Command dialog messages.
 	case dialog.ActionToggleYoloMode:
-		if m.mode == uiInputModePlan {
-			// Same as Ctrl+Y in plan mode: YOLO only exists as YOLO
-			// coding, so activating it leaves plan mode.
-			if cmd := m.switchPlanToYolo(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		} else {
-			m.toggleYoloMode()
-		}
+		cmds = append(cmds, m.toggleYoloInputMode())
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
@@ -2355,102 +2356,16 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			break
 		}
 		cmds = append(cmds, m.runMCPPrompt(msg.ClientID, msg.PromptID, msg.Args))
-	case dialog.ActionSetGoal:
-		if msg.Args == nil {
-			m.dialog.CloseFrontDialog()
-			m.dialog.OpenDialog(dialog.NewGoalInput(m.com, msg))
-			break
-		}
-		objective := strings.TrimSpace(msg.Args["objective"])
-		if objective == "" {
-			cmds = append(cmds, util.ReportWarn("Please provide an objective for the goal."))
-			break
-		}
-		if !m.com.Workspace.AgentIsReady() {
-			cmds = append(cmds, util.ReportError(fmt.Errorf("coder agent is not initialized")))
-			break
-		}
-		// Mirror sendMessage: create session synchronously so UI can subscribe
-		// to its events before the goal runtime starts publishing messages.
-		if !m.hasSession() {
-			newSession, err := m.com.Workspace.CreateSession(context.Background(), "New Session")
-			if err != nil {
-				cmds = append(cmds, util.ReportError(err))
-				break
-			}
-			if m.forceCompactMode {
-				m.isCompact = true
-			}
-			m.session = &newSession
-			cmds = append(cmds, m.loadSession(newSession.ID))
-			m.setState(uiChat, m.focus)
-		}
-		sessionID := m.session.ID
-		cmds = append(cmds, func() tea.Msg {
-			g, err := m.com.Workspace.GoalSet(context.Background(), sessionID, objective)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			return pubsub.Event[goal.Goal]{
-				Type:    pubsub.UpdatedEvent,
-				Payload: *g,
-			}
-		})
-		m.dialog.CloseFrontDialog()
 	case dialog.ActionGoalClear:
-		cmds = append(cmds, func() tea.Msg {
-			if !m.hasSession() {
-				return nil
-			}
-			g, err := m.com.Workspace.GoalClear(context.Background(), m.session.ID)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			if g == nil {
-				return util.NewInfoMsg("No active goal to clear.")
-			}
-			return pubsub.Event[goal.Goal]{
-				Type:    pubsub.DeletedEvent,
-				Payload: *g,
-			}
-		})
 		m.dialog.CloseFrontDialog()
+		cmds = append(cmds, m.clearGoal())
 	case dialog.ActionGoalPause:
-		cmds = append(cmds, func() tea.Msg {
-			if !m.hasSession() {
-				return util.NewInfoMsg("No active session.")
-			}
-			g, err := m.com.Workspace.GoalPause(context.Background(), m.session.ID)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			if g == nil {
-				return util.NewInfoMsg("No active goal to pause.")
-			}
-			return pubsub.Event[goal.Goal]{
-				Type:    pubsub.UpdatedEvent,
-				Payload: *g,
-			}
-		})
 		m.dialog.CloseFrontDialog()
+		cmds = append(cmds, m.pauseGoal())
 	case dialog.ActionGoalResume:
-		cmds = append(cmds, func() tea.Msg {
-			if !m.hasSession() {
-				return util.NewInfoMsg("No active session.")
-			}
-			g, err := m.com.Workspace.GoalResume(context.Background(), m.session.ID)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			if g == nil {
-				return util.NewInfoMsg("No active goal to resume.")
-			}
-			return pubsub.Event[goal.Goal]{
-				Type:    pubsub.UpdatedEvent,
-				Payload: *g,
-			}
-		})
 		m.dialog.CloseFrontDialog()
+		cmds = append(cmds, m.resumeGoal())
+
 	default:
 		cmds = append(cmds, util.CmdHandler(msg))
 	}
@@ -2854,21 +2769,17 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 			cmds = append(cmds, tea.Suspend)
 			return true
+		case key.Matches(msg, m.keyMap.GoalPause):
+			cmds = append(cmds, m.pauseGoal())
+			return true
+		case key.Matches(msg, m.keyMap.GoalClear):
+			cmds = append(cmds, m.clearGoal())
+			return true
+		case key.Matches(msg, m.keyMap.GoalResume):
+			cmds = append(cmds, m.resumeGoal())
+			return true
 		case key.Matches(msg, m.keyMap.ToggleYolo):
-			if m.mode == uiInputModePlan {
-				// YOLO has no meaning while planning; activating it
-				// switches straight to YOLO coding.
-				if cmd := m.switchPlanToYolo(); cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-				return true
-			}
-			yolo := m.toggleYoloMode()
-			if yolo {
-				cmds = append(cmds, util.CmdHandler(util.InfoMsg{Type: util.InfoTypeYolo, Msg: yoloModeBannerMsg}))
-			} else {
-				cmds = append(cmds, util.ReportInfo("Yolo mode disabled"))
-			}
+			cmds = append(cmds, m.toggleYoloInputMode())
 			return true
 		}
 		return false
@@ -2886,6 +2797,12 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	// Route all messages to dialog if one is open.
 	if m.dialog.HasDialogs() {
 		return m.handleDialogMsg(msg)
+	}
+
+	// Goal controls remain available while an inline question is focused.
+	if key.Matches(msg, m.keyMap.GoalPause, m.keyMap.GoalClear, m.keyMap.GoalResume) {
+		handleGlobalKeys(msg)
+		return tea.Batch(cmds...)
 	}
 
 	// Tab always toggles focus between editor and chat, even when
@@ -3004,6 +2921,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 						cmds = append(cmds, cmd)
 					}
 					break
+				}
+
+				// Goal creation preserves the editor until the backend accepts it.
+				if !m.bangMode && m.mode == uiInputModeGoal && m.needsGoalObjective() && !strings.HasPrefix(strings.TrimSpace(value), "/goal") && strings.TrimSpace(value) != "exit" && strings.TrimSpace(value) != "quit" {
+					return m.submitGoal(value)
 				}
 
 				// Otherwise, send the message
@@ -3581,6 +3503,15 @@ func (m *UI) applyProgressBar(v *tea.View) {
 func (m *UI) ShortHelp() []key.Binding {
 	var binds []key.Binding
 	k := &m.keyMap
+	if m.currentGoal != nil {
+		if m.currentGoal.Status == goal.GoalActive {
+			binds = append(binds, k.GoalPause)
+		}
+		if m.currentGoal.Status == goal.GoalPaused {
+			binds = append(binds, k.GoalResume)
+		}
+		binds = append(binds, k.GoalClear)
+	}
 
 	// When an inline editor is active, show its help.
 	if m.activeInline != nil {
@@ -3704,6 +3635,9 @@ func (m *UI) FullHelp() [][]key.Binding {
 
 	var binds [][]key.Binding
 	k := &m.keyMap
+	if m.mode == uiInputModeGoal || m.currentGoal != nil {
+		binds = append(binds, []key.Binding{k.GoalPause, k.GoalResume, k.GoalClear})
+	}
 	help := k.Help
 	help.SetHelp("ctrl+g", "less")
 	hasAttachments := len(m.attachments.List()) > 0
@@ -4322,7 +4256,7 @@ func (m *UI) openEditor(value string) tea.Cmd {
 }
 
 // setEditorPrompt configures the textarea prompt function based on whether
-// plan, yolo, or bang mode is enabled.
+// plan, goal, yolo, or bang mode is enabled.
 func (m *UI) setEditorPrompt(yolo bool) {
 	if m.bangMode {
 		m.textarea.SetPromptFunc(4, m.bangPromptFunc)
@@ -4330,6 +4264,10 @@ func (m *UI) setEditorPrompt(yolo bool) {
 	}
 	if m.mode == uiInputModePlan {
 		m.textarea.SetPromptFunc(4, m.planPromptFunc)
+		return
+	}
+	if m.mode == uiInputModeGoal {
+		m.textarea.SetPromptFunc(4, m.goalPromptFunc)
 		return
 	}
 	if yolo {
@@ -4370,6 +4308,21 @@ func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
 	return t.Editor.PromptPlanDotsBlurred.Render()
 }
 
+// goalPromptFunc marks goal mode with a target beside the editor.
+func (m *UI) goalPromptFunc(info textarea.PromptInfo) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return t.Editor.PromptGoalIconFocused.Render()
+		}
+		return t.Editor.PromptGoalIconBlurred.Render()
+	}
+	if info.Focused {
+		return t.Editor.PromptGoalDotsFocused.Render()
+	}
+	return t.Editor.PromptGoalDotsBlurred.Render()
+}
+
 // yoloPromptFunc returns the yolo mode editor prompt style with warning icon
 // and colored dots.
 func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
@@ -4404,43 +4357,34 @@ func (m *UI) bangPromptFunc(info textarea.PromptInfo) string {
 }
 
 func (m *UI) toggleInputMode() tea.Cmd {
-	if m.isAgentBusy() || m.modeSwitching {
-		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
+	switch {
+	case m.mode == uiInputModeGoal:
+		return m.switchInputMode(uiInputModeCode, false)
+	case m.mode == uiInputModePlan:
+		return m.switchInputMode(uiInputModeCode, true)
+	case m.yoloModeCached():
+		return m.switchInputMode(uiInputModeGoal, true)
+	default:
+		return m.switchInputMode(uiInputModePlan, false)
 	}
-	if m.mode == uiInputModePlan {
-		// Second step of the Shift+Tab cycle: plan -> YOLO. Enabling YOLO
-		// here is the only case where the cycle may disable it again.
-		if !m.com.Workspace.PermissionSkipRequests() {
-			m.toggleYoloMode()
-			m.cycleYolo = true
-		}
-		return m.setInputMode(uiInputModeCode)
-	}
-	// Only the cycle may turn YOLO back off: YOLO the user enabled himself
-	// (Ctrl+Y, the command palette) survives entering plan mode.
-	if m.com.Workspace.PermissionSkipRequests() && m.cycleYolo {
-		m.toggleYoloMode()
-		return util.ReportInfo("input mode: code")
-	}
-	return m.setInputMode(uiInputModePlan)
 }
 
-// switchPlanToYolo handles activating YOLO while in plan mode: YOLO is a
-// coding concern, so instead of a "plan + yolo" state the UI switches
-// straight to the coder with YOLO enabled. Activation is idempotent — YOLO
-// carried into plan mode stays on, and the user ends up in full YOLO mode
-// either way.
+func (m *UI) toggleYoloInputMode() tea.Cmd {
+	if m.mode == uiInputModeGoal || (m.mode == uiInputModeCode && m.yoloModeCached()) {
+		return m.switchInputMode(uiInputModeCode, false)
+	}
+	return m.switchPlanToYolo()
+}
+
 func (m *UI) switchPlanToYolo() tea.Cmd {
+	return m.switchInputMode(uiInputModeCode, true)
+}
+
+func (m *UI) switchInputMode(target uiInputMode, yolo bool) tea.Cmd {
 	if m.isAgentBusy() || m.modeSwitching {
 		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
 	}
-	if !m.com.Workspace.PermissionSkipRequests() {
-		m.toggleYoloMode()
-	}
-	// Explicit activation pins YOLO: the Shift+Tab cycle must not disable
-	// it on the next pass.
-	m.cycleYolo = false
-	return m.setInputMode(uiInputModeCode)
+	return m.setInputModeWithPermissions(target, yolo)
 }
 
 // Mode banner copy shown in the status bar after switching modes.
@@ -4450,31 +4394,79 @@ const (
 )
 
 func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
-	agentID := config.AgentPlan
-	if target == uiInputModeCode {
-		agentID = config.AgentCoder
+	return m.setInputModeWithPermissions(target, target == uiInputModeGoal)
+}
+
+func (m *UI) setInputModeWithPermissions(target uiInputMode, yolo bool) tea.Cmd {
+	return m.setInputModeWithGoalResume(target, yolo, true)
+}
+
+func (m *UI) setInputModeWithGoalResume(target uiInputMode, yolo, resume bool) tea.Cmd {
+	previous := m.mode
+	previousYolo := m.yoloModeCached()
+	agentID := config.AgentCoder
+	previousAgent := config.AgentCoder
+	if target == uiInputModePlan {
+		agentID = config.AgentPlan
+		yolo = false
 	}
-
-	// YOLO is orthogonal to the input mode, so report it alongside the mode
-	// instead of treating a YOLO-enabled coder as plain "code".
-	yolo := target == uiInputModeCode && m.com.Workspace.PermissionSkipRequests()
-
-	// The agent switch is an HTTP round-trip in client/server mode, so it
-	// runs off the update loop together with the model update. The mode and
-	// editor prompt only change once the switch succeeds (applyModeSwitch),
-	// so a failed switch never leaves the editor claiming a mode the
-	// server's active agent does not match.
+	if previous == uiInputModePlan {
+		previousAgent = config.AgentPlan
+	}
+	sessionID := ""
+	if m.hasSession() {
+		sessionID = m.session.ID
+	}
 	m.modeSwitching = true
 	return func() tea.Msg {
-		err := m.com.Workspace.AgentSetMain(agentID)
+		ctx := context.Background()
+		result := modeSwitchedMsg{mode: target, yolo: yolo}
+		if previous == uiInputModeGoal && target != uiInputModeGoal && sessionID != "" {
+			g, err := m.com.Workspace.GoalGet(ctx, sessionID)
+			if err == nil && g != nil && g.Status == goal.GoalActive {
+				_, err = m.com.Workspace.GoalPause(ctx, sessionID)
+			}
+			if err != nil {
+				result.mode, result.yolo, result.err = previous, previousYolo, err
+				return result
+			}
+		}
+		var err error
+		if agentID != previousAgent {
+			err = m.com.Workspace.AgentSetMain(agentID)
+			if err == nil {
+				err = m.com.Workspace.UpdateAgentModel(ctx)
+			}
+		}
 		if err == nil {
-			err = m.com.Workspace.UpdateAgentModel(context.Background())
+			m.com.Workspace.PermissionSetSkipRequests(yolo)
+			if target == uiInputModeGoal && sessionID != "" {
+				var g *goal.Goal
+				g, err = m.com.Workspace.GoalGet(ctx, sessionID)
+				if err == nil && g != nil {
+					switch g.Status {
+					case goal.GoalPaused:
+						if resume {
+							_, err = m.com.Workspace.GoalResume(ctx, sessionID)
+						}
+					case goal.GoalActive:
+						err = m.com.Workspace.GoalStart(ctx, sessionID)
+					}
+				}
+			}
 		}
-		return modeSwitchedMsg{
-			mode: target,
-			yolo: yolo,
-			err:  err,
+		if err != nil {
+			m.com.Workspace.PermissionSetSkipRequests(previousYolo)
+			var rollbackErr error
+			if agentID != previousAgent {
+				rollbackErr = m.com.Workspace.AgentSetMain(previousAgent)
+				if rollbackErr == nil {
+					rollbackErr = m.com.Workspace.UpdateAgentModel(ctx)
+				}
+			}
+			result.mode, result.yolo, result.err = previous, previousYolo, errors.Join(err, rollbackErr)
 		}
+		return result
 	}
 }
 
@@ -4482,16 +4474,22 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 // settled. On error the previous mode is kept so the editor never claims a
 // mode the server's active agent does not match.
 func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
+	m.yoloCache.set(msg.yolo)
+	m.busyFetchGen++
 	if msg.err != nil {
+		m.setEditorPrompt(msg.yolo)
 		return []tea.Cmd{util.ReportError(msg.err)}
 	}
 	m.mode = msg.mode
+	m.randomizePlaceholders()
 	m.setEditorPrompt(m.yoloModeCached())
 	var cmds []tea.Cmd
 	if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
 		cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
 	}
 	switch {
+	case msg.mode == uiInputModeGoal:
+		cmds = append(cmds, util.CmdHandler(util.InfoMsg{Type: util.InfoTypeGoal, Msg: "Work toward an objective without permission prompts."}))
 	case msg.mode == uiInputModePlan:
 		cmds = append(cmds, util.CmdHandler(util.InfoMsg{Type: util.InfoTypePlan, Msg: planModeBannerMsg}))
 	case msg.yolo:
@@ -4716,6 +4714,9 @@ var workingPlaceholders = [...]string{
 func (m *UI) randomizePlaceholders() {
 	m.workingPlaceholder = workingPlaceholders[rand.Intn(len(workingPlaceholders))]
 	m.readyPlaceholder = readyPlaceholders[rand.Intn(len(readyPlaceholders))]
+	if m.mode == uiInputModeGoal && m.needsGoalObjective() {
+		m.readyPlaceholder = "Describe the goal to work toward..."
+	}
 }
 
 // renderEditorView renders the editor view with attachments if any.
@@ -4988,9 +4989,6 @@ func cancelTimerCmd() tea.Cmd {
 	})
 }
 
-// cancelAgent handles the cancel key press. The first press sets isCanceling to true
-// and starts a timer. The second press (before the timer expires) actually
-// cancels the agent.
 func (m *UI) handleSlashGoal(value string) tea.Cmd {
 	if !strings.HasPrefix(value, "/goal") {
 		return nil
@@ -5020,27 +5018,18 @@ func (m *UI) handleSlashGoal(value string) tea.Cmd {
 	subcommand := parts[1]
 	switch subcommand {
 	case "clear":
-		return func() tea.Msg {
-			if !m.hasSession() {
-				return util.ReportWarn("Start a session first.")
-			}
-			g, err := m.com.Workspace.GoalClear(context.Background(), m.session.ID)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			if g == nil {
-				return nil
-			}
-			return pubsub.Event[goal.Goal]{
-				Type:    pubsub.DeletedEvent,
-				Payload: *g,
-			}
-		}
+		return m.clearGoal()
+	case "pause":
+		return m.pauseGoal()
+	case "resume":
+		return m.resumeGoal()
 	default:
-		return util.ReportWarn("Use the command palette (set_goal) to set a goal objective.")
+		return util.ReportWarn("Switch to Goal with Shift+Tab and enter an objective in the message field.")
 	}
 }
 
+// cancelAgent arms cancellation on the first Escape, then pauses the goal and
+// cancels the agent on the second press before the timer expires.
 func (m *UI) cancelAgent() tea.Cmd {
 	if !m.hasSession() {
 		return nil
@@ -5062,7 +5051,11 @@ func (m *UI) cancelAgent() tea.Cmd {
 			m.bangCancel = nil
 		}
 
-		m.com.Workspace.AgentCancel(m.session.ID)
+		sessionID := m.session.ID
+		cancel := func() tea.Msg {
+			m.com.Workspace.AgentCancel(sessionID)
+			return agentRunSubmittedMsg{}
+		}
 		// Stop the spinning todo indicator and drop the memoized busy
 		// state the cancel just changed; the pill re-renders now from
 		// last-known state and again when the off-thread refresh (and
@@ -5070,7 +5063,7 @@ func (m *UI) cancelAgent() tea.Cmd {
 		m.todoIsSpinning = false
 		m.invalidateBusyCaches()
 		m.renderPills()
-		return m.dispatchBusyRefresh()
+		return cancel
 	}
 
 	// Queued prompts pending: esc clears the queue. Decide from the cached
@@ -5179,12 +5172,7 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 	hasTodos := hasSession && hasIncompleteTodos(m.session.Todos)
 	hasQueue := m.promptQueue > 0
 
-	var goalStatus goal.GoalStatus
-	if m.currentGoal != nil {
-		goalStatus = m.currentGoal.Status
-	}
-
-	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, goalStatus, m.customCommands, m.mcpPrompts)
+	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.customCommands, m.mcpPrompts)
 	if err != nil {
 		return util.ReportError(err)
 	}
@@ -5391,16 +5379,15 @@ func (m *UI) handlePlanHandoff(rc notify.RunComplete) tea.Cmd {
 	return nil
 }
 
-// resetPlanModeState drops any pending plan handoff and, when plan mode is
-// active, switches back to code mode. Used when the UI moves to a different
-// session, since plan mode is scoped to the session it was enabled in.
+// resetPlanModeState drops the pending plan handoff and leaves session-scoped
+// plan or goal mode when moving to a different session.
 func (m *UI) resetPlanModeState() tea.Cmd {
 	m.setPlanReadyPending("")
 	if _, ok := m.activeInline.(*dialog.PlanHandoffInline); ok {
 		m.activeInline = nil
 		m.textarea.Focus()
 	}
-	if m.mode != uiInputModePlan {
+	if m.mode != uiInputModePlan && m.mode != uiInputModeGoal {
 		return nil
 	}
 	// The backend rejects agent switches while a run is active (409). When
@@ -5425,12 +5412,9 @@ func (m *UI) setPlanReadyPending(sessionID string) {
 func (m *UI) openPlanHandoff() {
 	inline := dialog.NewPlanHandoffInline(m.com)
 	inline.OnConfirm = func(yolo bool) tea.Cmd {
-		if m.com.Workspace.PermissionSkipRequests() != yolo {
-			m.toggleYoloMode()
-		}
 		m.setPlanReadyPending("")
 		sessionID := m.session.ID
-		cmd := m.setInputMode(uiInputModeCode)
+		cmd := m.setInputModeWithPermissions(uiInputModeCode, yolo)
 		return func() tea.Msg {
 			result := cmd()
 			if switched, ok := result.(modeSwitchedMsg); ok {
@@ -5562,6 +5546,9 @@ func (m *UI) handleAWSSSOAuthResult(errMsg string) tea.Cmd {
 func (m *UI) newSession() tea.Cmd {
 	if !m.hasSession() {
 		return nil
+	}
+	if m.modeSwitching {
+		return util.ReportWarn("Please wait for the input mode to finish switching...")
 	}
 
 	planCmd := m.resetPlanModeState()

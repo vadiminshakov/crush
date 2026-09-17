@@ -59,6 +59,9 @@ func (s *Status) SetMode(mode uiInputMode, yolo bool) {
 // the default coding mode.
 func (s *Status) modeBadge() string {
 	t := s.com.Styles
+	if s.inputMode == uiInputModeGoal {
+		return t.Status.ModeBadgeGoal.String()
+	}
 	// Mirror the editor prompt precedence: planning wins over YOLO, which
 	// can be carried into plan mode.
 	if s.inputMode == uiInputModePlan {
@@ -122,6 +125,9 @@ func (s *Status) Draw(scr uv.Screen, area uv.Rectangle) {
 	case util.InfoTypePlan:
 		indStyle = s.com.Styles.Status.ModeBannerPlanBadge
 		msgStyle = s.com.Styles.Status.ModeBannerPlan
+	case util.InfoTypeGoal:
+		indStyle = s.com.Styles.Status.ModeBannerGoalBadge
+		msgStyle = s.com.Styles.Status.ModeBannerGoal
 	case util.InfoTypeYolo:
 		indStyle = s.com.Styles.Status.ModeBannerYoloBadge
 		msgStyle = s.com.Styles.Status.ModeBannerYolo

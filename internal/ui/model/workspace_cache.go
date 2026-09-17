@@ -307,27 +307,6 @@ func (m *UI) staleWorkspaceRefreshCmds() []tea.Cmd {
 	return cmds
 }
 
-// toggleYoloMode flips permission auto-approval and writes the new value
-// through the yolo cache (no re-probe needed) and the editor prompt. Shared
-// by the direct keybinding and the commands-dialog action so both stay
-// write-through. Returns the new mode.
-func (m *UI) toggleYoloMode() bool {
-	yolo := !m.com.Workspace.PermissionSkipRequests()
-	m.com.Workspace.PermissionSetSkipRequests(yolo)
-	m.yoloCache.set(yolo)
-	// Supersede any in-flight busy/yolo probe: its result carries the old
-	// generation and would otherwise overwrite the value we just wrote.
-	// Bump the generation (rather than invalidateBusyCaches, which would
-	// clear the fresh value) so applyBusyState's guard discards and
-	// re-dispatches the stale probe.
-	m.busyFetchGen++
-	m.setEditorPrompt(yolo)
-	// Any explicit toggle hands YOLO ownership back to the user; the
-	// Shift+Tab cycle re-claims it right after its own call.
-	m.cycleYolo = false
-	return yolo
-}
-
 // yoloModeCached reports the memoized permission-skip ("yolo") mode. Toggles
 // write through the cache; the Update-tail backstop keeps it bounded-stale
 // otherwise.

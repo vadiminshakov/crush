@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/goal"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/styles"
@@ -58,7 +57,6 @@ type Commands struct {
 	hasSession bool
 	hasTodos   bool
 	hasQueue   bool
-	goalStatus goal.GoalStatus
 	selected   CommandType
 
 	spinner spinner.Model
@@ -80,7 +78,7 @@ type Commands struct {
 var _ Dialog = (*Commands)(nil)
 
 // NewCommands creates a new commands dialog.
-func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue bool, goalStatus goal.GoalStatus, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
+func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
 	c := &Commands{
 		com:            com,
 		selected:       SystemCommands,
@@ -88,7 +86,6 @@ func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, has
 		hasSession:     hasSession,
 		hasTodos:       hasTodos,
 		hasQueue:       hasQueue,
-		goalStatus:     goalStatus,
 		customCommands: customCommands,
 		mcpPrompts:     mcpPrompts,
 	}
@@ -542,15 +539,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		NewCommandItem(c.com.Styles, "toggle_yolo", "Toggle Yolo Mode", "ctrl+y", ActionToggleYoloMode{}),
 		NewCommandItem(c.com.Styles, "toggle_help", "Toggle Help", "ctrl+g", ActionToggleHelp{}),
 		NewCommandItem(c.com.Styles, "init", "Initialize Project", "", ActionInitializeProject{}),
-		NewCommandItem(c.com.Styles, "set_goal", "Set Goal", "", ActionSetGoal{}),
-		NewCommandItem(c.com.Styles, "clear_goal", "Clear Goal", "", ActionGoalClear{}),
 	)
-	switch c.goalStatus {
-	case goal.GoalActive:
-		commands = append(commands, NewCommandItem(c.com.Styles, "pause_goal", "Pause Goal", "", ActionGoalPause{}))
-	case goal.GoalPaused:
-		commands = append(commands, NewCommandItem(c.com.Styles, "resume_goal", "Resume Goal", "", ActionGoalResume{}))
-	}
 
 	// Add transparent background toggle.
 	transparentLabel := "Disable Background Color"

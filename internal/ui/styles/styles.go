@@ -165,6 +165,12 @@ type Styles struct {
 		PromptPlanDotsFocused lipgloss.Style
 		PromptPlanDotsBlurred lipgloss.Style
 
+		// Goal mode prompt.
+		PromptGoalIconFocused lipgloss.Style
+		PromptGoalIconBlurred lipgloss.Style
+		PromptGoalDotsFocused lipgloss.Style
+		PromptGoalDotsBlurred lipgloss.Style
+
 		// YOLO mode prompt.
 		PromptYoloIconFocused lipgloss.Style
 		PromptYoloIconBlurred lipgloss.Style
@@ -591,12 +597,15 @@ type Styles struct {
 		// Mode badges shown before the help hints.
 		ModeBadgePlan lipgloss.Style
 		ModeBadgeYolo lipgloss.Style
+		ModeBadgeGoal lipgloss.Style
 
 		// Full-width banners shown when switching modes.
 		ModeBannerPlan      lipgloss.Style
 		ModeBannerPlanBadge lipgloss.Style
 		ModeBannerYolo      lipgloss.Style
 		ModeBannerYoloBadge lipgloss.Style
+		ModeBannerGoal      lipgloss.Style
+		ModeBannerGoalBadge lipgloss.Style
 
 		ErrorIndicator   lipgloss.Style
 		WarnIndicator    lipgloss.Style

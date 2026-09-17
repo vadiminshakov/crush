@@ -35,6 +35,7 @@ const (
 	InfoTypeUpdate
 	InfoTypePlan
 	InfoTypeYolo
+	InfoTypeGoal
 )
 
 func NewInfoMsg(info string) InfoMsg {

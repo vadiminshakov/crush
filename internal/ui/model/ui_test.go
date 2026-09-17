@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/goal"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
@@ -130,6 +131,12 @@ type testWorkspace struct {
 	agentBusy         bool
 	runPrompts        []string
 	yolo              bool
+	goal              *goal.Goal
+	goalErr           error
+	goalSetCalls      int
+	goalStartCalls    int
+	goalResumeCalls   int
+	goalPauseCalls    int
 	runHidden         []bool
 }
 
@@ -194,6 +201,7 @@ func TestToggleInputMode(t *testing.T) {
 	}{
 		{uiInputModePlan, false, 1},
 		{uiInputModeCode, true, 2},
+		{uiInputModeGoal, true, 2},
 		{uiInputModeCode, false, 2},
 	} {
 		applyModeSwitchMsg(ui, ui.toggleInputMode())
@@ -659,9 +667,9 @@ func TestPlanHandoffExplicitPermissionMode(t *testing.T) {
 		u.openPlanHandoff()
 		inline := u.activeInline.(*dialog.PlanHandoffInline)
 		cmd := inline.OnConfirm(yolo)
-		require.Equal(t, yolo, ws.yolo)
 		require.Empty(t, ws.runPrompts, "wait for the coder model to finish switching")
 		switched := cmd().(modeSwitchedMsg)
+		require.Equal(t, yolo, ws.yolo)
 		require.NoError(t, switched.err)
 		require.Equal(t, "sess-1", switched.continueSessionID)
 	}
@@ -693,13 +701,14 @@ func TestGeneratedPlanContinuationIsHidden(t *testing.T) {
 	require.Equal(t, []string{"Implement the plan.", "Implement the plan."}, ws.runPrompts)
 }
 
-func TestToggleInputModePreservesExistingYOLOOnEntry(t *testing.T) {
+func TestToggleInputModeEntersGoalFromYOLO(t *testing.T) {
 	t.Parallel()
 	u, ws := newPlanUI(t, "sess-1")
 	u.mode = uiInputModeCode
 	ws.yolo = true
+	u.yoloCache.set(true)
 	applyModeSwitchMsg(u, u.toggleInputMode())
-	require.Equal(t, uiInputModePlan, u.mode)
+	require.Equal(t, uiInputModeGoal, u.mode)
 	require.True(t, ws.yolo)
 }
 
@@ -708,12 +717,10 @@ func TestSwitchPlanToYolo(t *testing.T) {
 	for _, carriedYolo := range []bool{false, true} {
 		u, ws := newPlanUI(t, "sess-1")
 		ws.yolo = carriedYolo
-		u.cycleYolo = carriedYolo
 
 		applyModeSwitchMsg(u, u.switchPlanToYolo())
 		require.Equal(t, uiInputModeCode, u.mode, "activating YOLO leaves plan mode")
 		require.True(t, ws.yolo, "YOLO ends up enabled regardless of the carried state")
-		require.False(t, u.cycleYolo, "explicit activation must not be undone by the Shift+Tab cycle")
 		require.Equal(t, config.AgentCoder, ws.setMainCalledWith)
 	}
 }

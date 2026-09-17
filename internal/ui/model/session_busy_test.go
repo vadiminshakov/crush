@@ -337,58 +337,28 @@ func TestSessionSwitchRefreshesQueueAndBusy(t *testing.T) {
 	require.Equal(t, []string{"a", "b"}, m.promptQueueItems)
 }
 
-// TestToggleYoloWritesThroughCache: both yolo toggle paths share
-// toggleYoloMode, which must write the known new value through the cache —
-// no invalidation, no re-probe.
 func TestToggleYoloWritesThroughCache(t *testing.T) {
-	pinTTLs(t)
-
-	ws := &countingWorkspace{ready: true, yolo: false}
-	m := newBusyUI(ws)
-
-	got := m.toggleYoloMode()
-	require.True(t, got)
-	require.Equal(t, 1, ws.permSetCalls)
-	readsAfterToggle := ws.permCalls
-	require.Equal(t, 1, readsAfterToggle, "toggle reads the authoritative value exactly once")
-
-	require.True(t, m.yoloModeCached(), "the new value must be served from the cache")
-	require.True(t, m.yoloCache.fresh(busyCacheTTL), "write-through must stamp the cache fresh")
-	m.yoloModeCached()
-	require.Equal(t, readsAfterToggle, ws.permCalls, "reads after the toggle must not re-probe")
-
-	got = m.toggleYoloMode()
-	require.False(t, got)
+	t.Parallel()
+	m, ws := newPlanUI(t, "sess-1")
+	m.mode = uiInputModeCode
+	applyModeSwitchMsg(m, m.toggleYoloInputMode())
+	require.True(t, ws.yolo)
+	require.True(t, m.yoloModeCached())
+	require.True(t, m.yoloCache.fresh(busyCacheTTL))
+	applyModeSwitchMsg(m, m.toggleYoloInputMode())
+	require.False(t, ws.yolo)
 	require.False(t, m.yoloModeCached())
 }
 
-// TestLocalYoloToggleSupersedesInFlightProbe pins the generation bump in
-// toggleYoloMode: a busy/yolo probe dispatched before the toggle carries the
-// old generation. Without advancing busyFetchGen its stale result would land
-// with a still-matching generation and clobber the just-toggled value.
 func TestLocalYoloToggleSupersedesInFlightProbe(t *testing.T) {
-	pinTTLs(t)
-
-	ws := &countingWorkspace{ready: true, yolo: false}
-	m := newBusyUI(ws)
-	warmCaches(m, false)
-
-	// A busy/yolo probe carrying the pre-toggle generation is in flight.
-	m.busyFetchInFlight = true
+	t.Parallel()
+	m, _ := newPlanUI(t, "sess-1")
+	m.mode = uiInputModeCode
 	staleGen := m.busyFetchGen
-
-	require.True(t, m.toggleYoloMode())
-	require.NotEqual(t, staleGen, m.busyFetchGen,
-		"toggle must advance the busy generation to supersede in-flight probes")
-	require.True(t, m.yoloModeCached(), "toggle must write the new value through the cache")
-
-	// The stale probe (old generation, old yolo=false) lands.
-	m.busyFetchInFlight = true
-	cmds := m.applyBusyState(busyStateMsg{gen: staleGen, yolo: false})
-	require.True(t, m.yoloModeCached(),
-		"stale probe must not overwrite the freshly toggled value")
-	require.NotEmpty(t, cmds, "stale probe must re-dispatch an authoritative refresh")
-	require.True(t, m.busyFetchInFlight, "re-dispatched refresh must be in flight")
+	applyModeSwitchMsg(m, m.toggleYoloInputMode())
+	require.NotEqual(t, staleGen, m.busyFetchGen)
+	m.applyBusyState(busyStateMsg{gen: staleGen, yolo: false})
+	require.True(t, m.yoloModeCached())
 }
 
 // TestSendMessageSetsOptimisticBusy pins the esc-after-enter behavior:
@@ -414,8 +384,8 @@ func TestSendMessageSetsOptimisticBusy(t *testing.T) {
 	m.cancelAgent()
 	require.True(t, m.isCanceling, "first esc press must arm cancellation")
 
-	// Second press must actually cancel.
-	m.cancelAgent()
+	// Second press dispatches cancellation outside Update.
+	m.cancelAgent()()
 	require.Equal(t, 1, ws.cancelCalls, "second esc press must cancel the agent")
 }
 

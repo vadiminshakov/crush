@@ -779,6 +779,10 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Editor.PromptPlanIconBlurred = s.Editor.PromptPlanIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
 	s.Editor.PromptPlanDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.primary).SetString(":::")
 	s.Editor.PromptPlanDotsBlurred = s.Editor.PromptPlanDotsFocused.Foreground(o.fgMoreSubtle)
+	s.Editor.PromptGoalIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.bgBase).Background(o.success).Bold(true).SetString(" ● ")
+	s.Editor.PromptGoalIconBlurred = s.Editor.PromptGoalIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
+	s.Editor.PromptGoalDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.success).SetString(":::")
+	s.Editor.PromptGoalDotsBlurred = s.Editor.PromptGoalDotsFocused.Foreground(o.fgMoreSubtle)
 	s.Editor.PromptYoloIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.bgBase).Background(o.busy).Bold(true).SetString(" ! ")
 	s.Editor.PromptYoloIconBlurred = s.Editor.PromptYoloIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
 	s.Editor.PromptYoloDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.warningSubtle).SetString(":::")
@@ -1085,6 +1089,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Status.Help = lipgloss.NewStyle().Padding(0, 1)
 	s.Status.ModeBadgePlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.primary).Padding(0, 1).Bold(true).SetString("PLAN MODE")
 	s.Status.ModeBadgeYolo = lipgloss.NewStyle().Foreground(o.bgBase).Background(o.busy).Padding(0, 1).Bold(true).SetString("YOLO MODE")
+	s.Status.ModeBadgeGoal = lipgloss.NewStyle().Foreground(o.bgBase).Background(o.success).Padding(0, 1).Bold(true).SetString("GOAL MODE")
+	s.Status.ModeBannerGoalBadge = s.Status.ModeBadgeGoal
+	s.Status.ModeBannerGoal = lipgloss.NewStyle().Foreground(o.bgBase).Background(o.success).Padding(0, 1)
 	s.Status.ModeBannerPlanBadge = s.Status.ModeBadgePlan
 	s.Status.ModeBannerPlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.planMoreSubtle).Padding(0, 1)
 	s.Status.ModeBannerYoloBadge = s.Status.ModeBadgeYolo

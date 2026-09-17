@@ -85,6 +85,9 @@ type KeyMap struct {
 	Tab        key.Binding
 	ToggleYolo key.Binding
 	ShiftTab   key.Binding
+	GoalPause  key.Binding
+	GoalClear  key.Binding
+	GoalResume key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -121,6 +124,9 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+y"),
 			key.WithHelp("ctrl+y", "toggle yolo"),
 		),
+		GoalPause:  key.NewBinding(key.WithKeys("f6"), key.WithHelp("f6", "pause goal")),
+		GoalClear:  key.NewBinding(key.WithKeys("f8"), key.WithHelp("f8", "clear goal")),
+		GoalResume: key.NewBinding(key.WithKeys("f7"), key.WithHelp("f7", "resume goal")),
 		ShiftTab: key.NewBinding(
 			key.WithKeys("shift+tab"),
 			key.WithHelp("shift+tab", "mode"),
