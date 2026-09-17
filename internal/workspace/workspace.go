@@ -167,7 +167,7 @@ type Workspace interface {
 	GoalPause(ctx context.Context, sessionID string) (*goal.Goal, error)
 	GoalResume(ctx context.Context, sessionID string) (*goal.Goal, error)
 	GoalStart(ctx context.Context, sessionID string) error
-	GoalClear(ctx context.Context, sessionID string) (*goal.Goal, error)
+	GoalClear(ctx context.Context, sessionID, goalID string) (*goal.Goal, error)
 
 	// Permissions
 	//

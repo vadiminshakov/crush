@@ -73,9 +73,12 @@ func TestContinuationFailurePausesGoal(t *testing.T) {
 	}
 }
 
-func (s *runtimeStore) Clear(context.Context, string) (*Goal, error) {
+func (s *runtimeStore) Clear(_ context.Context, _ string, goalID string) (*Goal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.goal == nil || s.goal.GoalID != goalID {
+		return nil, errors.New("stale goal")
+	}
 	g := s.goal
 	s.goal = nil
 	return g, nil
@@ -136,12 +139,25 @@ func TestGoalPauseAndClearCancelRunningContinuation(t *testing.T) {
 	t.Run("clear", func(t *testing.T) {
 		t.Parallel()
 		runtime, runner, done := startTurn(t)
-		_, err := runtime.Clear(t.Context(), "session")
+		_, err := runtime.Clear(t.Context(), "session", "goal")
 		require.NoError(t, err)
 		require.ErrorIs(t, <-done, context.Canceled)
 		require.NoError(t, runtime.MaybeContinue(t.Context(), "session"))
 		require.Equal(t, 1, runner.runs)
 	})
+}
+
+func TestStaleClearDoesNotCancelReplacementGoal(t *testing.T) {
+	t.Parallel()
+	store := &runtimeStore{goal: &Goal{SessionID: "session", GoalID: "replacement", Status: GoalActive}}
+	runtime := NewRuntime(store, &runtimeAgent{}, nil)
+	runCtx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	runtime.running["session"] = cancel
+
+	_, err := runtime.Clear(t.Context(), "session", "old")
+	require.ErrorContains(t, err, "stale goal")
+	require.NoError(t, runCtx.Err())
 }
 
 func TestNormalAnswerContinuesUntilGoalComplete(t *testing.T) {

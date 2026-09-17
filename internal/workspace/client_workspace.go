@@ -357,7 +357,7 @@ func (w *ClientWorkspace) GoalStart(ctx context.Context, sessionID string) error
 	return errors.New("GoalStart not implemented for client workspace")
 }
 
-func (w *ClientWorkspace) GoalClear(ctx context.Context, sessionID string) (*goal.Goal, error) {
+func (w *ClientWorkspace) GoalClear(ctx context.Context, sessionID, goalID string) (*goal.Goal, error) {
 	// TODO: Implement API call in client
 	return nil, errors.New("GoalClear not implemented for client workspace")
 }

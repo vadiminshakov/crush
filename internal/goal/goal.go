@@ -40,7 +40,7 @@ type Service interface {
 	Get(ctx context.Context, sessionID string) (*Goal, error)
 	Create(ctx context.Context, sessionID string, objective string) (*Goal, error)
 	UpdateStatus(ctx context.Context, sessionID string, goalID string, status GoalStatus) (*Goal, error)
-	Clear(ctx context.Context, sessionID string) (*Goal, error)
+	Clear(ctx context.Context, sessionID string, goalID string) (*Goal, error)
 }
 
 type service struct {
@@ -88,8 +88,12 @@ func (s *service) Create(ctx context.Context, sessionID string, objective string
 		if existingGoal.Status != GoalComplete {
 			return nil, fmt.Errorf("session already has an active goal")
 		}
-		if err = qtx.DeleteGoal(ctx, sessionID); err != nil {
-			return nil, fmt.Errorf("clearing completed goal: %w", err)
+		rows, deleteErr := qtx.DeleteGoal(ctx, db.DeleteGoalParams{SessionID: sessionID, GoalID: existing.GoalID})
+		if deleteErr != nil {
+			return nil, fmt.Errorf("clearing completed goal: %w", deleteErr)
+		}
+		if rows == 0 {
+			return nil, fmt.Errorf("clearing completed goal: goal not found or stale goal ID")
 		}
 	}
 
@@ -162,7 +166,7 @@ func (s *service) UpdateStatus(ctx context.Context, sessionID string, goalID str
 	return goal, nil
 }
 
-func (s *service) Clear(ctx context.Context, sessionID string) (*Goal, error) {
+func (s *service) Clear(ctx context.Context, sessionID string, goalID string) (*Goal, error) {
 	goal, err := s.Get(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -170,8 +174,15 @@ func (s *service) Clear(ctx context.Context, sessionID string) (*Goal, error) {
 	if goal == nil {
 		return nil, nil
 	}
-	if err = s.q.DeleteGoal(ctx, sessionID); err != nil {
+	if goal.GoalID != goalID {
+		return nil, fmt.Errorf("goal not found or stale goal ID")
+	}
+	rows, err := s.q.DeleteGoal(ctx, db.DeleteGoalParams{SessionID: sessionID, GoalID: goalID})
+	if err != nil {
 		return nil, fmt.Errorf("deleting goal: %w", err)
+	}
+	if rows == 0 {
+		return nil, fmt.Errorf("goal not found or stale goal ID")
 	}
 	s.Publish(pubsub.DeletedEvent, *goal)
 	return goal, nil

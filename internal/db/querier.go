@@ -15,7 +15,7 @@ type Querier interface {
 	CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	DeleteFile(ctx context.Context, id string) error
-	DeleteGoal(ctx context.Context, scopeID string) error
+	DeleteGoal(ctx context.Context, arg DeleteGoalParams) (int64, error)
 	DeleteMessage(ctx context.Context, id string) error
 	DeleteSession(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error

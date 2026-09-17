@@ -38,6 +38,6 @@ SET
     updated_at = strftime('%s', 'now')
 WHERE session_id = ? AND status = 'active';
 
--- name: DeleteGoal :exec
+-- name: DeleteGoal :execrows
 DELETE FROM goals
-WHERE session_id = ?;
+WHERE session_id = ? AND goal_id = ?;

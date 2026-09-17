@@ -293,8 +293,8 @@ func (w *AppWorkspace) GoalStart(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-func (w *AppWorkspace) GoalClear(ctx context.Context, sessionID string) (*goal.Goal, error) {
-	g, err := w.app.GoalRuntime.Clear(ctx, sessionID)
+func (w *AppWorkspace) GoalClear(ctx context.Context, sessionID, goalID string) (*goal.Goal, error) {
+	g, err := w.app.GoalRuntime.Clear(ctx, sessionID, goalID)
 	if g != nil {
 		w.AgentCancel(sessionID)
 	}

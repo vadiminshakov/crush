@@ -81,12 +81,14 @@ func (r *Runtime) pauseLocked(ctx context.Context, sessionID string) (*Goal, err
 }
 
 // Clear removes the goal and cancels any admitted continuation.
-func (r *Runtime) Clear(ctx context.Context, sessionID string) (*Goal, error) {
+func (r *Runtime) Clear(ctx context.Context, sessionID string, goalID string) (*Goal, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	g, err := r.store.Clear(ctx, sessionID)
-	if cancel := r.running[sessionID]; cancel != nil {
-		cancel()
+	g, err := r.store.Clear(ctx, sessionID, goalID)
+	if err == nil && g != nil {
+		if cancel := r.running[sessionID]; cancel != nil {
+			cancel()
+		}
 	}
 	return g, err
 }

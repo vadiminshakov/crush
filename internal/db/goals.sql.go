@@ -70,14 +70,22 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 	return i, err
 }
 
-const deleteGoal = `-- name: DeleteGoal :exec
+const deleteGoal = `-- name: DeleteGoal :execrows
 DELETE FROM goals
-WHERE session_id = ?
+WHERE session_id = ? AND goal_id = ?
 `
 
-func (q *Queries) DeleteGoal(ctx context.Context, sessionID string) error {
-	_, err := q.exec(ctx, q.deleteGoalStmt, deleteGoal, sessionID)
-	return err
+type DeleteGoalParams struct {
+	SessionID string `json:"session_id"`
+	GoalID    string `json:"goal_id"`
+}
+
+func (q *Queries) DeleteGoal(ctx context.Context, arg DeleteGoalParams) (int64, error) {
+	result, err := q.exec(ctx, q.deleteGoalStmt, deleteGoal, arg.SessionID, arg.GoalID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getGoalBySessionID = `-- name: GetGoalBySessionID :one

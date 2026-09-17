@@ -107,12 +107,16 @@ func (m *UI) changeGoal(clear bool) tea.Cmd {
 		return util.ReportWarn("Please wait for the input mode to finish switching...")
 	}
 	sessionID := m.session.ID
+	goalID := ""
+	if m.currentGoal != nil {
+		goalID = m.currentGoal.GoalID
+	}
 	return func() tea.Msg {
 		var g *goal.Goal
 		var err error
 		eventType := pubsub.UpdatedEvent
 		if clear {
-			g, err = m.com.Workspace.GoalClear(context.Background(), sessionID)
+			g, err = m.com.Workspace.GoalClear(context.Background(), sessionID, goalID)
 			eventType = pubsub.DeletedEvent
 		} else {
 			g, err = m.com.Workspace.GoalPause(context.Background(), sessionID)
