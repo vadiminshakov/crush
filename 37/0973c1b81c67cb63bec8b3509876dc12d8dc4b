@@ -1,0 +1,20 @@
+internal/workspace/app_workspace.go
+  s_006c12417d8d19::t_32a7d14da892d0 274-275,277,281-282,284,297-300
+  s_006c12417d8d19::t_b8c40da25661ef 273,301
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "370973c1b81c67cb63bec8b3509876dc12d8dc4b",
+  "prompts": {},
+  "sessions": {
+    "s_006c12417d8d19": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0abcc-8428-7482-ae8f-466d2ed5767d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
