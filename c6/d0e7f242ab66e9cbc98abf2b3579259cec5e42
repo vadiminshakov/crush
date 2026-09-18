@@ -1,0 +1,25 @@
+internal/goal/commands.go
+  s_f9456ec987270a::t_fbb3008c75b642 13-32,44-49,52-53,57-58,64-65,68,76-79,86-87,94
+  s_f9456ec987270a::t_b6abbc5b84c455 33,35,41-43,51
+  s_f9456ec987270a::t_985cc23a605b37 50
+internal/goal/turn_outcome.go
+  s_f9456ec987270a::t_b49a5f0df5301b 58-70
+internal/goal/runtime.go
+  s_f9456ec987270a::t_4a26b7125fe4f1 7,39-47,53-54,56-62,64-70,73-75,82-85,106-107,110-111,115-116,123-158,162-163,177-184,196,199-201,205-211,213,216-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c6d0e7f242ab66e9cbc98abf2b3579259cec5e42",
+  "prompts": {},
+  "sessions": {
+    "s_f9456ec987270a": {
+      "agent_id": {
+        "tool": "junie",
+        "id": "1789758101118",
+        "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
