@@ -190,11 +190,52 @@ func TestAnsweredTurnsContinueUntilGoalComplete(t *testing.T) {
 		if agent.continuations.Load() == 3 {
 			store.complete()
 		}
-		return answered()
+		return withToolCall()
 	})
 	runtime.TryContinueGoal("session")
 	require.Eventually(t, func() bool { return store.status() == GoalComplete }, waitFor, time.Millisecond)
 	require.Never(t, func() bool { return agent.continuations.Load() > 3 }, 50*time.Millisecond, time.Millisecond)
+}
+
+func withToolCall() (*fantasy.AgentResult, error) {
+	return &fantasy.AgentResult{
+		Response: fantasy.Response{FinishReason: fantasy.FinishReasonStop},
+		Steps: []fantasy.StepResult{
+			{Response: fantasy.Response{
+				FinishReason: fantasy.FinishReasonToolCalls,
+				Content:      fantasy.ResponseContent{fantasy.ToolCallContent{ToolCallID: "1", ToolName: "bash"}},
+			}},
+			{Response: fantasy.Response{FinishReason: fantasy.FinishReasonStop}},
+		},
+	}, nil
+}
+
+// A continuation that only talks, without calling a tool, must not be
+// followed by another one until the user speaks or resumes the goal.
+func TestIdleContinuationSuppressesTheNext(t *testing.T) {
+	t.Parallel()
+	store := newFakeStore(GoalActive)
+	runtime, agent := newRuntime(store, func(context.Context, string) (*fantasy.AgentResult, error) {
+		return answered()
+	})
+	runtime.TryContinueGoal("session")
+	require.Eventually(t, func() bool { return agent.continuations.Load() == 1 }, waitFor, time.Millisecond)
+	require.Never(t, func() bool { return agent.continuations.Load() > 1 }, 50*time.Millisecond, time.Millisecond)
+	require.Equal(t, GoalActive, store.status())
+
+	// A user turn lifts the suppression.
+	require.True(t, agent.claim())
+	_, err := agent.turn(t.Context(), answered)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return agent.continuations.Load() == 2 }, waitFor, time.Millisecond)
+	require.Never(t, func() bool { return agent.continuations.Load() > 2 }, 50*time.Millisecond, time.Millisecond)
+
+	// So does a pause followed by a resume.
+	_, err = runtime.Pause(t.Context(), "session")
+	require.NoError(t, err)
+	_, err = runtime.Resume(t.Context(), "session")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return agent.continuations.Load() == 3 }, waitFor, time.Millisecond)
 }
 
 func TestFailedTurnPausesGoal(t *testing.T) {
