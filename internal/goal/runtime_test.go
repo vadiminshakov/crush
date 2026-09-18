@@ -96,6 +96,7 @@ func (s *fakeStore) complete() {
 type fakeAgent struct {
 	runtime       *Runtime
 	continuation  func(ctx context.Context, goalID string) (*fantasy.AgentResult, error)
+	attempts      atomic.Int32
 	continuations atomic.Int32
 
 	mu   sync.Mutex
@@ -109,6 +110,7 @@ func newRuntime(store Service, continuation func(ctx context.Context, goalID str
 }
 
 func (a *fakeAgent) RunContinuation(ctx context.Context, _, _ string) (*fantasy.AgentResult, error) {
+	a.attempts.Add(1)
 	if !a.claim() {
 		return nil, nil
 	}
@@ -337,6 +339,8 @@ func TestResumeWhileStoppedTurnUnwinds(t *testing.T) {
 	require.NoError(t, err)
 	_, err = runtime.Resume(t.Context(), "session")
 	require.NoError(t, err)
+	// Resume's continuation finds the session busy and is dropped.
+	require.Eventually(t, func() bool { return agent.attempts.Load() == 1 }, waitFor, time.Millisecond)
 	close(release)
 	<-done
 

@@ -29,12 +29,11 @@ type Agent interface {
 // Runtime keeps a session's goal moving. It is a post-turn policy on top of
 // the agent, not a scheduler: the agent reports every finished turn to
 // TurnFinished, which applies the turn's outcome to the goal and, while the
-// goal stays active, asks for one more continuation turn. Since the agent
-// starts a continuation only on an idle session, the runtime never tracks
-// who occupies a session: a continuation that finds it busy is dropped, and
-// the turn keeping it busy tries again when it finishes. Continuation
-// attempts of one session run one at a time, so a goal read and the
-// continuation it starts never race with another attempt's.
+// goal stays active, asks for one more continuation turn. The agent starts
+// a continuation only on an idle session, which keeps continuations of one
+// session from running in parallel; a continuation that finds the session
+// busy is dropped, and the turn keeping it busy asks again when it
+// finishes.
 //
 // Continuations run under a per-session context that every status change
 // the runtime makes cancels and replaces. A change thereby stops them,
@@ -52,15 +51,11 @@ type Runtime struct {
 	// continuation cancel following it are observed by others as one step.
 	statusMu sync.Mutex
 
-	// mu guards continuationCtx and attempting. It is never held across
-	// calls out.
+	// mu guards continuationCtx. It is never held across calls out.
 	mu sync.Mutex
 	// continuationCtx holds the context each session's continuations run
 	// under.
 	continuationCtx map[string]cancelableCtx
-	// attempting holds the sessions with a continuation attempt running,
-	// each with whether another attempt was requested meanwhile.
-	attempting map[string]bool
 }
 
 type cancelableCtx struct {
@@ -77,52 +72,21 @@ func NewRuntime(goals Service, agent Agent, notify pubsub.Publisher[notify.Notif
 		root:            root,
 		stop:            stop,
 		continuationCtx: make(map[string]cancelableCtx),
-		attempting:      make(map[string]bool),
 	}
 }
 
-// TryContinueGoal starts a continuation turn in the background if the
-// session's goal is active and the session idle, and does nothing
-// otherwise. Attempts requested while one runs collapse into a single
-// attempt after it. A nil Runtime does nothing.
+// TryContinueGoal starts, in the background, one continuation turn for the
+// session's goal if the goal is active and the session idle, and does
+// nothing otherwise. A nil Runtime does nothing.
 func (r *Runtime) TryContinueGoal(sessionID string) {
-	if r == nil || !r.startAttempt(sessionID) {
+	if r == nil {
 		return
 	}
 	go func() {
-		for again := true; again; again = r.finishAttempt(sessionID) {
-			if err := r.continueGoal(sessionID); err != nil {
-				slog.Error("Goal continuation failed", "session_id", sessionID, "error", err)
-			}
+		if err := r.continueGoal(sessionID); err != nil {
+			slog.Error("Goal continuation failed", "session_id", sessionID, "error", err)
 		}
 	}()
-}
-
-// startAttempt reports whether the caller should run the session's
-// continuation attempt. If one is already running, it asks that one to
-// make one more attempt.
-func (r *Runtime) startAttempt(sessionID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, running := r.attempting[sessionID]; running {
-		r.attempting[sessionID] = true
-		return false
-	}
-	r.attempting[sessionID] = false
-	return true
-}
-
-// finishAttempt ends the session's continuation attempt and reports whether
-// another one was requested meanwhile.
-func (r *Runtime) finishAttempt(sessionID string) (again bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.attempting[sessionID] {
-		r.attempting[sessionID] = false
-		return true
-	}
-	delete(r.attempting, sessionID)
-	return false
 }
 
 // continueGoal starts at most one continuation turn for the session's
@@ -174,18 +138,13 @@ func (r *Runtime) TurnFinished(ctx context.Context, sessionID string, result *fa
 	switch classifyTurn(ctx, result, err) {
 	case turnQueued:
 	case turnFailed:
-		r.pauseAfterFailure(sessionID)
+		pauseCtx, cancel := context.WithTimeout(context.Background(), pauseTimeout)
+		defer cancel()
+		if _, err := r.Pause(pauseCtx, sessionID); err != nil {
+			slog.Error("Failed to pause goal after a failed turn", "session_id", sessionID, "error", err)
+		}
 	case turnAnswered, turnCancelled:
 		r.TryContinueGoal(sessionID)
-	}
-}
-
-// pauseAfterFailure pauses the session's goal after a failed turn.
-func (r *Runtime) pauseAfterFailure(sessionID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), pauseTimeout)
-	defer cancel()
-	if _, err := r.Pause(ctx, sessionID); err != nil {
-		slog.Error("Failed to pause goal after a failed turn", "session_id", sessionID, "error", err)
 	}
 }
 
