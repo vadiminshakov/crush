@@ -1,0 +1,22 @@
+internal/goal/runtime_test.go
+  s_f9456ec987270a::t_c571fd9d437df4 203-209
+  s_f9456ec987270a::t_3d893c0c3b71e6 200-202,210-239
+  s_f9456ec987270a::t_60421779616271 193
+  s_f9456ec987270a::t_5d2d7153722882 240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0b80037d0e0dc45de48b8ce1f6d823edd5d46f75",
+  "prompts": {},
+  "sessions": {
+    "s_f9456ec987270a": {
+      "agent_id": {
+        "tool": "junie",
+        "id": "1789758101118",
+        "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
