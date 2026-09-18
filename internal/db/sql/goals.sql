@@ -26,10 +26,17 @@ RETURNING *;
 -- name: UpdateGoalStatus :one
 UPDATE goals
 SET
-    status = ?,
+    status = @status,
     updated_at = strftime('%s', 'now')
-WHERE session_id = ? AND goal_id = ?
+WHERE session_id = @session_id AND goal_id = @goal_id AND status = @from_status
 RETURNING *;
+
+-- name: PauseActiveGoals :execrows
+UPDATE goals
+SET
+    status = 'paused',
+    updated_at = strftime('%s', 'now')
+WHERE status = 'active';
 
 -- name: AccumulateActiveTime :exec
 UPDATE goals

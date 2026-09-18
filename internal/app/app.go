@@ -103,6 +103,14 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	messages := message.NewService(q)
 	files := history.NewService(q, conn)
 	goalService := goal.NewService(q, conn)
+	// Goals are paused on graceful shutdown, so anything still active here
+	// was left behind by a crash. Park it instead of letting it drive the
+	// agent again on its own, and stop its downtime from counting as work.
+	if paused, err := goalService.PauseAllActive(ctx); err != nil {
+		slog.Error("Failed to pause goals left active by a previous run", "error", err)
+	} else if paused > 0 {
+		slog.Info("Paused goals left active by a previous run", "count", paused)
+	}
 	cfg := store.Config()
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
 	var allowedTools []string

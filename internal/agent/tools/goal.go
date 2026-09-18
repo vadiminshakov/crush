@@ -38,7 +38,7 @@ func NewUpdateGoalTool(goalService goal.Service) fantasy.AgentTool {
 		}
 
 		// Stale update protection: verify goal ID from context if present.
-		if expectedGoalID, ok := ctx.Value(goal.GoalIDContextKey).(string); ok {
+		if expectedGoalID, ok := goal.ContinuationOf(ctx); ok {
 			if g.GoalID != expectedGoalID {
 				return fantasy.NewTextErrorResponse("Goal ID mismatch: you are trying to update a goal that has been replaced."), nil
 			}

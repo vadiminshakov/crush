@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/message"
@@ -39,6 +40,16 @@ func (s *runtimeStore) UpdateStatus(ctx context.Context, sessionID, goalID strin
 	s.goal.Status = status
 	g := *s.goal
 	return &g, nil
+}
+
+func (s *runtimeStore) PauseAllActive(context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil || s.goal.Status != GoalActive {
+		return 0, nil
+	}
+	s.goal.Status = GoalPaused
+	return 1, nil
 }
 
 type runtimeAgent struct {
@@ -84,7 +95,7 @@ func (s *runtimeStore) Clear(_ context.Context, _ string, goalID string) (*Goal,
 	return g, nil
 }
 
-func TestTurnStopped(t *testing.T) {
+func TestClassifyTurnStopped(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string
@@ -103,7 +114,7 @@ func TestTurnStopped(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.stopped, turnStopped(tt.result, tt.err))
+			require.Equal(t, tt.stopped, classifyTurn(tt.result, tt.err) == turnStopped)
 		})
 	}
 }
@@ -151,9 +162,9 @@ func TestStaleClearDoesNotCancelReplacementGoal(t *testing.T) {
 	t.Parallel()
 	store := &runtimeStore{goal: &Goal{SessionID: "session", GoalID: "replacement", Status: GoalActive}}
 	runtime := NewRuntime(store, &runtimeAgent{}, nil)
-	runCtx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	runtime.running["session"] = cancel
+	runCtx, ok := runtime.sessions.acquireContinuation(t.Context(), "session")
+	require.True(t, ok)
+	t.Cleanup(func() { runtime.sessions.releaseContinuation("session") })
 
 	_, err := runtime.Clear(t.Context(), "session", "old")
 	require.ErrorContains(t, err, "stale goal")
@@ -180,13 +191,14 @@ func TestNormalAnswerContinuesUntilGoalComplete(t *testing.T) {
 	require.Equal(t, GoalComplete, store.goal.Status)
 }
 
-func TestAfterTurnPausesEvenWithCancelledContext(t *testing.T) {
+func TestFinishPausesEvenWithCancelledContext(t *testing.T) {
 	t.Parallel()
 	store := &runtimeStore{goal: &Goal{SessionID: "session", GoalID: "goal", Status: GoalActive}}
 	runtime := NewRuntime(store, &runtimeAgent{}, nil)
 	ctx, cancel := context.WithCancel(t.Context())
+	lease := runtime.Occupy(ctx, "session")
 	cancel()
-	runtime.AfterTurn(ctx, "session", nil, context.Canceled)
+	lease.Finish(ctx, nil, context.Canceled)
 	require.Equal(t, GoalPaused, store.goal.Status)
 }
 
@@ -230,16 +242,85 @@ func TestCancelledBeforeDispatchPausesGoal(t *testing.T) {
 	require.Zero(t, runner.runs)
 }
 
+func TestReleaseResumesContinuationSuppressedByBusyWork(t *testing.T) {
+	t.Parallel()
+	store := &runtimeStore{goal: &Goal{SessionID: "session", GoalID: "goal", Status: GoalActive}}
+	started := make(chan struct{})
+	runner := &runtimeAgent{run: func(ctx context.Context) (*fantasy.AgentResult, error) {
+		_, err := store.UpdateStatus(ctx, "session", "goal", GoalComplete)
+		require.NoError(t, err)
+		close(started)
+		return &fantasy.AgentResult{Response: fantasy.Response{FinishReason: fantasy.FinishReasonStop}}, nil
+	}}
+	runtime := NewRuntime(store, runner, nil)
+
+	// Summarize-style work holds the turn; a continuation arriving now
+	// must yield without touching the agent.
+	lease := runtime.Occupy(t.Context(), "session")
+	require.NoError(t, runtime.MaybeContinue(t.Context(), "session"))
+	select {
+	case <-started:
+		t.Fatal("continuation ran while the session was busy")
+	default:
+	}
+
+	// Releasing the turn is what re-drives the goal.
+	lease.Release()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("continuation did not run after the busy work finished")
+	}
+	require.False(t, runtime.sessions.turnInFlight("session"))
+}
+
 func TestResumeWaitsForCoordinatorFinalization(t *testing.T) {
 	t.Parallel()
 	store := &runtimeStore{goal: &Goal{SessionID: "session", GoalID: "goal", Status: GoalPaused}}
 	runtime := NewRuntime(store, &runtimeAgent{}, nil)
-	runtime.BeginTurn("session")
+	lease := runtime.Occupy(t.Context(), "session")
 	_, err := runtime.Resume(t.Context(), "session")
 	require.ErrorContains(t, err, "still stopping")
-	runtime.AfterTurn(t.Context(), "session", nil, context.Canceled)
-	runtime.mu.Lock()
-	require.Zero(t, runtime.turns["session"])
-	runtime.mu.Unlock()
+	lease.Finish(t.Context(), nil, context.Canceled)
+	require.False(t, runtime.sessions.turnInFlight("session"))
 	require.Equal(t, GoalPaused, store.goal.Status)
+}
+
+func TestTurnReactionPolicy(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, keepWaiting, turnQueued.reaction())
+	require.Equal(t, continueGoal, turnAnswered.reaction())
+	require.Equal(t, pauseGoal, turnStopped.reaction())
+}
+
+func TestFinishLeavesContinuationTurnsToTheirLoop(t *testing.T) {
+	t.Parallel()
+	store := &runtimeStore{goal: &Goal{SessionID: "session", GoalID: "goal", Status: GoalActive}}
+	runtime := NewRuntime(store, &runtimeAgent{}, nil)
+	ctx := WithContinuation(t.Context(), "goal")
+	runtime.Occupy(ctx, "session").Finish(ctx, nil, errors.New("continuation failed"))
+	require.Equal(t, GoalActive, store.goal.Status)
+	require.False(t, runtime.sessions.turnInFlight("session"))
+}
+
+func TestLeaseClosesOnce(t *testing.T) {
+	t.Parallel()
+	runtime := NewRuntime(&runtimeStore{}, &runtimeAgent{}, nil)
+	outer := runtime.Occupy(t.Context(), "session")
+	inner := runtime.Occupy(t.Context(), "session")
+	inner.Release()
+	// Closing a lease twice must not release another holder's occupancy.
+	inner.Finish(t.Context(), nil, nil)
+	require.True(t, runtime.sessions.turnInFlight("session"))
+	outer.Release()
+	require.False(t, runtime.sessions.turnInFlight("session"))
+}
+
+func TestNilRuntimeLeaseIsNoop(t *testing.T) {
+	t.Parallel()
+	var runtime *Runtime
+	lease := runtime.Occupy(t.Context(), "session")
+	require.Nil(t, lease)
+	lease.Finish(t.Context(), nil, nil)
+	lease.Release()
 }

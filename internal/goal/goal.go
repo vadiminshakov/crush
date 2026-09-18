@@ -22,8 +22,21 @@ const (
 
 type contextKey struct{ name string }
 
-// GoalIDContextKey is the context key used to propagate the active goal ID across tool calls.
-var GoalIDContextKey = contextKey{"goal_id"}
+// continuationKey marks a context as belonging to a continuation turn: a
+// synthetic turn the runtime starts on behalf of a goal.
+var continuationKey = contextKey{"goal_continuation"}
+
+// WithContinuation returns a context for a continuation turn driving goalID.
+func WithContinuation(ctx context.Context, goalID string) context.Context {
+	return context.WithValue(ctx, continuationKey, goalID)
+}
+
+// ContinuationOf reports the goal a continuation turn is driving, or false
+// when ctx belongs to an ordinary turn.
+func ContinuationOf(ctx context.Context) (goalID string, ok bool) {
+	goalID, ok = ctx.Value(continuationKey).(string)
+	return goalID, ok
+}
 
 type Goal struct {
 	SessionID     string     `json:"session_id"`
@@ -35,12 +48,39 @@ type Goal struct {
 	ActiveSeconds int64      `json:"active_seconds"`
 }
 
+// isActiveGoal reports whether g is an active goal. When goalID is non-empty
+// the goal must also be the one the caller observed, so a goal replaced
+// mid-turn is not mistaken for its predecessor. A nil g is never active.
+func (g *Goal) isActiveGoal(goalID string) bool {
+	if g == nil || g.Status != GoalActive {
+		return false
+	}
+	return goalID == "" || g.GoalID == goalID
+}
+
+// transitions lists, for every target status, the statuses a goal may move
+// from. UpdateStatus applies them as compare-and-set conditions so that two
+// racing writers can never both observe a successful transition.
+var transitions = map[GoalStatus][]GoalStatus{
+	GoalActive:   {GoalPaused},
+	GoalPaused:   {GoalActive},
+	GoalComplete: {GoalActive, GoalPaused},
+}
+
 type Service interface {
 	pubsub.Subscriber[Goal]
 	Get(ctx context.Context, sessionID string) (*Goal, error)
 	Create(ctx context.Context, sessionID string, objective string) (*Goal, error)
+	// UpdateStatus atomically moves the goal to status. It succeeds only
+	// when the goal currently holds a status listed in transitions; when
+	// the goal already holds the requested status, or a pause targets a
+	// completed goal, the current row is returned unchanged.
 	UpdateStatus(ctx context.Context, sessionID string, goalID string, status GoalStatus) (*Goal, error)
 	Clear(ctx context.Context, sessionID string, goalID string) (*Goal, error)
+	// PauseAllActive moves every active goal to paused. It is meant for
+	// startup, where any goal still active was left behind by a process
+	// that did not shut down cleanly.
+	PauseAllActive(ctx context.Context) (int64, error)
 }
 
 type service struct {
@@ -118,6 +158,11 @@ func (s *service) Create(ctx context.Context, sessionID string, objective string
 }
 
 func (s *service) UpdateStatus(ctx context.Context, sessionID string, goalID string, status GoalStatus) (*Goal, error) {
+	froms, ok := transitions[status]
+	if !ok {
+		return nil, fmt.Errorf("unknown goal status %q", status)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
@@ -126,35 +171,49 @@ func (s *service) UpdateStatus(ctx context.Context, sessionID string, goalID str
 
 	qtx := s.q.WithTx(tx)
 
-	// A cancellation racing the completion tool must not reopen a finished goal.
-	if status == GoalPaused {
-		current, err := qtx.GetGoalBySessionID(ctx, sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("getting goal before pause: %w", err)
-		}
-		if current.GoalID != goalID {
-			return nil, fmt.Errorf("goal not found or stale goal ID")
-		}
-		if GoalStatus(current.Status) == GoalComplete {
-			return s.fromDBItem(current), nil
-		}
-	}
-
+	// Only active rows accumulate time, so this is a no-op unless the goal
+	// is actually leaving the active state below.
 	if status != GoalActive {
 		if err := qtx.AccumulateActiveTime(ctx, sessionID); err != nil {
 			return nil, fmt.Errorf("accumulating active time: %w", err)
 		}
 	}
-	dbGoal, err := qtx.UpdateGoalStatus(ctx, db.UpdateGoalStatusParams{
-		SessionID: sessionID,
-		GoalID:    goalID,
-		Status:    string(status),
-	})
+
+	var dbGoal db.Goal
+	for _, from := range froms {
+		dbGoal, err = qtx.UpdateGoalStatus(ctx, db.UpdateGoalStatusParams{
+			Status:     string(status),
+			SessionID:  sessionID,
+			GoalID:     goalID,
+			FromStatus: string(from),
+		})
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("updating goal status: %w", err)
+		}
+	}
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		// No row matched the compare-and-set: the goal ID is stale or the
+		// goal already sits in a state this transition does not start from.
+		current, getErr := qtx.GetGoalBySessionID(ctx, sessionID)
+		if getErr != nil {
+			if errors.Is(getErr, sql.ErrNoRows) {
+				return nil, fmt.Errorf("goal not found or stale goal ID")
+			}
+			return nil, fmt.Errorf("getting goal: %w", getErr)
+		}
+		if current.GoalID != goalID {
 			return nil, fmt.Errorf("goal not found or stale goal ID")
 		}
-		return nil, fmt.Errorf("updating goal status: %w", err)
+		currentStatus := GoalStatus(current.Status)
+		// Repeating a transition is harmless, and a cancellation racing the
+		// completion tool must not reopen a finished goal.
+		if currentStatus == status || (status == GoalPaused && currentStatus == GoalComplete) {
+			return s.fromDBItem(current), nil
+		}
+		return nil, fmt.Errorf("goal is %s and cannot become %s", currentStatus, status)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -186,6 +245,14 @@ func (s *service) Clear(ctx context.Context, sessionID string, goalID string) (*
 	}
 	s.Publish(pubsub.DeletedEvent, *goal)
 	return goal, nil
+}
+
+func (s *service) PauseAllActive(ctx context.Context) (int64, error) {
+	rows, err := s.q.PauseActiveGoals(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("pausing active goals: %w", err)
+	}
+	return rows, nil
 }
 
 func (s *service) fromDBItem(item db.Goal) *Goal {

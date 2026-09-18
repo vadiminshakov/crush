@@ -260,6 +260,44 @@ func TestRun_CancelOnEntryPublishesRunComplete(t *testing.T) {
 	}
 }
 
+// TestRun_CancelledContextOnEntryLeavesNoMessages covers a run whose
+// context is already cancelled when it becomes the active request (a
+// goal pause landing between the runtime's own check and dispatch). It
+// must return the cancellation without persisting the prompt, publish a
+// cancelled RunComplete, and leave the session idle.
+func TestRun_CancelledContextOnEntryLeavesNoMessages(t *testing.T) {
+	t.Parallel()
+	sa, env, broker := newCancelTestAgentWithRunComplete(t)
+
+	sess, err := env.sessions.Create(t.Context(), "session")
+	require.NoError(t, err)
+
+	ch := broker.Subscribe(t.Context())
+
+	runCtx, cancelRun := context.WithCancel(t.Context())
+	cancelRun()
+	result, err := sa.Run(runCtx, SessionAgentCall{
+		SessionID: sess.ID,
+		RunID:     "run-cancelled-ctx",
+		Prompt:    "continue the goal",
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, result)
+	require.False(t, sa.IsSessionBusy(sess.ID))
+
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Empty(t, msgs, "a cancelled-on-entry run must not persist any message")
+
+	select {
+	case got := <-ch:
+		assert.Equal(t, "run-cancelled-ctx", got.Payload.RunID)
+		assert.True(t, got.Payload.Cancelled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled-on-entry run must publish RunComplete")
+	}
+}
+
 // TestCancel_TwoAcceptedBothObserveCancellation covers the second review
 // finding: a single cancel with two accepted-not-yet-active prompts must
 // cancel both. The cancel raises the session's high-water mark to the

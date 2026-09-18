@@ -309,17 +309,13 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 // dispatchMu; when nil (the in-process/local path) no accept tracking
 // applies.
 func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (result *fantasy.AgentResult, retErr error) {
-	if c.goalRuntime != nil {
-		c.goalRuntime.BeginTurn(sessionID)
-	}
+	lease := c.goalRuntime.Occupy(ctx, sessionID)
 	defer func() {
 		failure := recover()
 		if failure != nil {
 			retErr = fmt.Errorf("agent panicked: %v", failure)
 		}
-		if c.goalRuntime != nil {
-			c.goalRuntime.AfterTurn(ctx, sessionID, result, retErr)
-		}
+		lease.Finish(ctx, result, retErr)
 		if failure != nil {
 			panic(failure)
 		}
@@ -1385,18 +1381,28 @@ func (c *coordinator) BeginAccepted(sessionID string) *AcceptedRun {
 	return c.currentAgent().BeginAccepted(sessionID)
 }
 
+// goalStoreTimeout bounds the goal persistence performed on the cancel
+// path. The goal runtime serializes that persistence behind its mutex, so
+// an unbounded wait on a busy database would stall every other goal
+// operation, including the turn finalization that lets Run return.
+const goalStoreTimeout = 5 * time.Second
+
 func (c *coordinator) Cancel(sessionID string) {
 	if c.goalRuntime != nil {
-		if _, err := c.goalRuntime.Pause(context.Background(), sessionID); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), goalStoreTimeout)
+		if _, err := c.goalRuntime.Pause(ctx, sessionID); err != nil {
 			slog.Error("Failed to pause goal during cancellation", "session_id", sessionID, "error", err)
 		}
+		cancel()
 	}
 	c.currentAgent().Cancel(sessionID)
 }
 
 func (c *coordinator) CancelAll() {
 	if c.goalRuntime != nil {
-		c.goalRuntime.Stop(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), goalStoreTimeout)
+		c.goalRuntime.Stop(ctx)
+		cancel()
 	}
 	c.currentAgent().CancelAll()
 }
@@ -1464,6 +1470,11 @@ func (c *coordinator) QueuedPromptsList(sessionID string) []string {
 }
 
 func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
+	// Summarization occupies the session like a turn does, so it must be
+	// visible to the goal runtime: otherwise a continuation arriving while
+	// the session is busy summarizing would be dropped without anyone
+	// left to retry it.
+	defer c.goalRuntime.Occupy(ctx, sessionID).Release()
 	agent := c.currentAgent()
 	providerCfg, ok := c.cfg.Config().Providers.Get(agent.Model().ModelCfg.Provider)
 	if !ok {

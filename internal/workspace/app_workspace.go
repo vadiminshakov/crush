@@ -261,11 +261,7 @@ func (w *AppWorkspace) GoalSet(ctx context.Context, sessionID, objective string)
 	if err != nil {
 		return nil, err
 	}
-	go func() {
-		if err := w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID); err != nil {
-			slog.Error("Goal continuation failed after set", "session_id", sessionID, "error", err)
-		}
-	}()
+	w.app.GoalRuntime.Kick(sessionID)
 	return g, nil
 }
 
@@ -285,11 +281,7 @@ func (w *AppWorkspace) GoalResume(ctx context.Context, sessionID string) (*goal.
 }
 
 func (w *AppWorkspace) GoalStart(ctx context.Context, sessionID string) error {
-	go func() {
-		if err := w.app.GoalRuntime.MaybeContinue(context.Background(), sessionID); err != nil {
-			slog.Error("Goal continuation failed on start", "session_id", sessionID, "error", err)
-		}
-	}()
+	w.app.GoalRuntime.Kick(sessionID)
 	return nil
 }
 

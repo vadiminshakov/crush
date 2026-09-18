@@ -658,6 +658,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// the new run's cancel and breaking cancellation.
 	defer a.activeRequests.CompareAndDelete(call.SessionID, ac)
 
+	// Bail out before persisting anything if the run was cancelled before
+	// it started, so no stray user message ends up in the session.
+	if err := ctx.Err(); err != nil {
+		a.publishRunComplete(context.WithoutCancel(ctx), call, notify.RunComplete{
+			SessionID: call.SessionID,
+			RunID:     call.RunID,
+			Cancelled: true,
+		})
+		return nil, err
+	}
+
 	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
 	agentTools := a.tools.Copy()
 	largeModel := a.largeModel.Get()
@@ -860,8 +871,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 
 			// Propagate goal ID if present in the caller context.
-			if goalID, ok := ctx.Value(goal.GoalIDContextKey).(string); ok {
-				callContext = context.WithValue(callContext, goal.GoalIDContextKey, goalID)
+			if goalID, ok := goal.ContinuationOf(ctx); ok {
+				callContext = goal.WithContinuation(callContext, goalID)
 			}
 
 			sessionLock.Lock()
