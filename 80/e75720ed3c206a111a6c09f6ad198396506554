@@ -1,0 +1,101 @@
+internal/goal/continuation.go
+  s_aa3227fe061a1e::t_cbdbc7afa4c07c 1-97
+internal/goal/occupancy.go
+  s_aa3227fe061a1e::t_ef895e23d811b8 1-221
+internal/db/sql/goals.sql
+  s_693d7dae09a213::t_5800e4db99b3b5 29,31,34-39
+  s_693d7dae09a213::t_037d787dafcc5f 40
+internal/agent/coordinator.go
+  s_693d7dae09a213::t_049ff02def883c 1384-1389,1392-1393,1396,1403-1405
+  s_693d7dae09a213::t_e38db44df87ec7 1473-1476
+  s_aa3227fe061a1e::t_fe320d2abb82bb 312,318,1477
+internal/agent/tools/goal.go
+  s_aa3227fe061a1e::t_11640c8f91cd7d 41
+internal/goal/runtime_test.go
+  s_aa3227fe061a1e::t_9a4872d2109d43 194,199,201,245,259,268,281,284,288-325
+  s_693d7dae09a213::t_46bb90c0f3b7b2 45-54
+  s_431d72612a91c0::t_132d970c84610c 326
+  s_693d7dae09a213::t_61111cde62c27a 246-258,260-267,269-273,275-276
+  s_693d7dae09a213::t_9d2749cb4a5e10 98,117,165-167,274,285
+  s_aa3227fe061a1e::t_d89b1ff3af9d58 8
+internal/agent/agent.go
+  s_693d7dae09a213::t_7d8623f71596fb 661-662
+  s_693d7dae09a213::t_168ffd25bf46e6 664
+  s_693d7dae09a213::t_4ee49d968c43af 663,665-671
+  s_aa3227fe061a1e::t_11640c8f91cd7d 874-875
+internal/app/app.go
+  s_693d7dae09a213::t_ecefcb15b2aa53 106-113
+internal/goal/commands.go
+  s_aa3227fe061a1e::t_a34b93cb6438c8 1-78
+internal/goal/goal.go
+  s_693d7dae09a213::t_7fad3f1bcf0a5e 51-60
+  s_aa3227fe061a1e::t_13cf9f17b3ffb0 25-39
+  s_693d7dae09a213::t_439c0e62fd4e35 61-69,74-77,80-83,161-165,174-175,181-196,198-207,210-216,250-256
+  s_693d7dae09a213::t_8f5a6d2501ddc1 257
+internal/goal/runtime.go
+  s_aa3227fe061a1e::t_d9761fa7340f02 46,49
+  s_693d7dae09a213::t_9d963e3d58438a 15-17
+  s_aa3227fe061a1e::t_1725b93c614def 32-39,61-63
+  s_693d7dae09a213::t_cc606401fc0e3f 19-20,27-31,41-44,47-48,54,57
+  s_693d7dae09a213::t_0552c91bd03448 64-66
+  s_aa3227fe061a1e::t_2044cb8e48ee53 45
+internal/goal/turn_outcome.go
+  s_693d7dae09a213::t_0cb7757d7672c0 1-49
+  s_aa3227fe061a1e::t_08625d2200fa22 50-76
+internal/workspace/app_workspace.go
+  s_aa3227fe061a1e::t_fe320d2abb82bb 264,284
+internal/agent/dispatch_cancel_test.go
+  s_693d7dae09a213::t_1ab060b5a3b85b 263-300
+internal/goal/goal_test.go
+  s_693d7dae09a213::t_2b797b9f19ec0d 12-107
+  s_693d7dae09a213::t_e2fdda05ae7cd2 4
+  s_aa3227fe061a1e::t_9a4872d2109d43 138-146
+internal/goal/continuation_prompt.go
+  s_693d7dae09a213::t_b75f5f94f0e177 1-24
+internal/db/db.go
+  h_786988a78af769 36-37,73,141-143,357-361,434,469,485,520
+  h_786988a78af769 38,182-186
+internal/goal/occupancy_test.go
+  s_aa3227fe061a1e::t_30e368e93a9712 1-65
+internal/db/goals.sql.go
+  h_786988a78af769 3,47,112-127,131,133,138-141,145-150
+internal/db/querier.go
+  h_786988a78af769 3,12,15,56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "80e75720ed3c206a111a6c09f6ad198396506554",
+  "prompts": {},
+  "humans": {
+    "h_786988a78af769": {
+      "author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_431d72612a91c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e404a445-324c-400e-8c6d-5a8281c6bdae",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_693d7dae09a213": {
+      "agent_id": {
+        "tool": "junie",
+        "id": "1789723962909",
+        "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_aa3227fe061a1e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1db6af9e-fcb6-471c-8666-ea2372574018",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
