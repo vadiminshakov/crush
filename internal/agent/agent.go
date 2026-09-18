@@ -117,6 +117,13 @@ type SessionAgentCall struct {
 	// (in-process / local callers like AppWorkspace), behavior is
 	// unchanged and no accept tracking applies.
 	Accepted *AcceptedRun
+	// IdleOnly makes Run start the call only on an idle session. When the
+	// session already has work (an active or dispatched run, or queued
+	// prompts), Run returns a nil result and error without running or
+	// queueing the call. Goal continuations use it: queued, a continuation
+	// would run under another turn's context and after prompts the user
+	// sent later.
+	IdleOnly bool
 	// acceptSeq carries the accept sequence of the handle that produced
 	// this call after it has been enqueued and its Accepted handle
 	// stripped. The queue-drain paths compare it against a session's
@@ -616,6 +623,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return nil, err
 		}
 		a.publishRunComplete(ctx, call, complete)
+		return nil, nil
+	}
+
+	if call.IdleOnly && a.hasWork(call.SessionID) {
+		sessMu.Unlock()
 		return nil, nil
 	}
 
@@ -1226,6 +1238,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				existing = []SessionAgentCall{}
 			}
 			call.Prompt = fmt.Sprintf("The previous session was interrupted because it got too long, the initial user request was: `%s`", call.Prompt)
+			// The turn already runs; it resumes from the queue even though
+			// the queue now makes the session look occupied.
+			call.IdleOnly = false
 			existing = append(existing, call)
 			a.messageQueue.Set(call.SessionID, existing)
 		}
@@ -1352,9 +1367,20 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 }
 
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
+	// Check and claim the session in one step under the dispatch mutex, as
+	// Run does, so that no run can start in between.
+	sessMu := a.sessionMu(sessionID)
+	sessMu.Lock()
 	if a.IsSessionBusy(sessionID) {
+		sessMu.Unlock()
 		return ErrSessionBusy
 	}
+	genCtx, cancel := context.WithCancel(ctx)
+	ac := &activeCancel{cancel: cancel}
+	a.activeRequests.Set(sessionID, ac)
+	sessMu.Unlock()
+	defer a.activeRequests.CompareAndDelete(sessionID, ac)
+	defer cancel()
 
 	// Copy mutable fields under lock to avoid races with SetModels.
 	largeModel := a.largeModel.Get()
@@ -1375,11 +1401,6 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 
 	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.SupportsImages)
 
-	genCtx, cancel := context.WithCancel(ctx)
-	ac := &activeCancel{cancel: cancel}
-	a.activeRequests.Set(sessionID, ac)
-	defer a.activeRequests.CompareAndDelete(sessionID, ac)
-	defer cancel()
 	defer func() {
 		if flushErr := a.messages.FlushAll(ctx); flushErr != nil {
 			slog.Error("Failed to flush pending message updates after summarize", "error", flushErr)
@@ -2112,6 +2133,19 @@ func (a *sessionAgent) IsBusy() bool {
 func (a *sessionAgent) IsSessionBusy(sessionID string) bool {
 	_, busy := a.activeRequests.Get(sessionID)
 	return busy
+}
+
+// hasWork reports whether the session has a run that is active, dispatched
+// but not yet active, or queued. Callers must hold the session's dispatch
+// mutex, under which queued prompts are handed off as dispatched runs.
+func (a *sessionAgent) hasWork(sessionID string) bool {
+	if a.IsSessionBusy(sessionID) || a.QueuedPrompts(sessionID) > 0 {
+		return true
+	}
+	a.acceptedMu.Lock()
+	defer a.acceptedMu.Unlock()
+	dispatched, _ := a.acceptedRuns.Get(sessionID)
+	return dispatched > 0
 }
 
 func (a *sessionAgent) QueuedPrompts(sessionID string) int {

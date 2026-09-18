@@ -48,16 +48,6 @@ type Goal struct {
 	ActiveSeconds int64      `json:"active_seconds"`
 }
 
-// isActiveGoal reports whether g is an active goal. When goalID is non-empty
-// the goal must also be the one the caller observed, so a goal replaced
-// mid-turn is not mistaken for its predecessor. A nil g is never active.
-func (g *Goal) isActiveGoal(goalID string) bool {
-	if g == nil || g.Status != GoalActive {
-		return false
-	}
-	return goalID == "" || g.GoalID == goalID
-}
-
 // transitions lists, for every target status, the statuses a goal may move
 // from. UpdateStatus applies them as compare-and-set conditions so that two
 // racing writers can never both observe a successful transition.

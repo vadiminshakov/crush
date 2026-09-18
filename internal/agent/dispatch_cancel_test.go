@@ -298,6 +298,40 @@ func TestRun_CancelledContextOnEntryLeavesNoMessages(t *testing.T) {
 	}
 }
 
+// TestRun_IdleOnlyNeverQueues covers the goal continuation path: an
+// IdleOnly call on a session that already has work (active, queued, or
+// dispatched but not yet active) must neither run nor join the queue.
+func TestRun_IdleOnlyNeverQueues(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		work func(sa *sessionAgent, sid string)
+	}{
+		{name: "active", work: func(sa *sessionAgent, sid string) {
+			sa.activeRequests.Set(sid, &activeCancel{cancel: func() {}})
+		}},
+		{name: "queued", work: func(sa *sessionAgent, sid string) {
+			sa.enqueueCall(SessionAgentCall{SessionID: sid, Prompt: "queued"})
+		}},
+		{name: "dispatched", work: func(sa *sessionAgent, sid string) {
+			sa.BeginAccepted(sid)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sa, _ := newCancelTestAgent(t)
+			const sid = "sid"
+			tt.work(sa, sid)
+			queued := sa.QueuedPrompts(sid)
+
+			result, err := sa.Run(t.Context(), SessionAgentCall{SessionID: sid, Prompt: "continue the goal", IdleOnly: true})
+			require.NoError(t, err)
+			require.Nil(t, result)
+			require.Equal(t, queued, sa.QueuedPrompts(sid))
+		})
+	}
+}
+
 // TestCancel_TwoAcceptedBothObserveCancellation covers the second review
 // finding: a single cancel with two accepted-not-yet-active prompts must
 // cancel both. The cancel raises the session's high-water mark to the

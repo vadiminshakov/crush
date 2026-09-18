@@ -303,23 +303,24 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 	return c.run(ctx, accept, sessionID, prompt, attachments...)
 }
 
-// run is the shared implementation behind Run and RunAccepted. When
-// accept is non-nil it is threaded onto the SessionAgentCall as
-// Accepted so sessionAgent.Run can consume the accept reservation under
-// dispatchMu; when nil (the in-process/local path) no accept tracking
-// applies.
-func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (result *fantasy.AgentResult, retErr error) {
-	lease := c.goalRuntime.Occupy(ctx, sessionID)
-	defer func() {
-		failure := recover()
-		if failure != nil {
-			retErr = fmt.Errorf("agent panicked: %v", failure)
-		}
-		lease.Finish(ctx, result, retErr)
-		if failure != nil {
-			panic(failure)
-		}
-	}()
+// RunContinuation implements goal.Agent.
+func (c *coordinator) RunContinuation(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
+	return c.run(ctx, nil, sessionID, prompt)
+}
+
+// run is the shared implementation behind Run, RunAccepted and
+// RunContinuation. It reports every finished turn to the goal runtime.
+func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	result, err := c.runTurn(ctx, accept, sessionID, prompt, attachments...)
+	c.goalRuntime.TurnFinished(ctx, sessionID, result, err)
+	return result, err
+}
+
+// runTurn runs one agent turn. When accept is non-nil it is threaded onto
+// the SessionAgentCall as Accepted so sessionAgent.Run can consume the
+// accept reservation under dispatchMu; when nil (the in-process/local
+// path) no accept tracking applies.
+func (c *coordinator) runTurn(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -397,6 +398,8 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	// the coalesce closure publishes the final outcome under that
 	// same correlator.
 	runID := RunIDFromContext(ctx)
+	// A goal continuation only starts on an idle session.
+	_, continuation := goal.ContinuationOf(ctx)
 	run := func() (*fantasy.AgentResult, error) {
 		return agent.Run(ctx, SessionAgentCall{
 			SessionID:         sessionID,
@@ -413,6 +416,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 			PresencePenalty:   presPenalty,
 			OnComplete:        onComplete,
 			Accepted:          accept,
+			IdleOnly:          continuation,
 			OnAuthRefresh:     c.makeAuthRefreshCallback(providerCfg),
 		})
 	}
@@ -1470,11 +1474,10 @@ func (c *coordinator) QueuedPromptsList(sessionID string) []string {
 }
 
 func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
-	// Summarization occupies the session like a turn does, so it must be
-	// visible to the goal runtime: otherwise a continuation arriving while
-	// the session is busy summarizing would be dropped without anyone
-	// left to retry it.
-	defer c.goalRuntime.Occupy(ctx, sessionID).Release()
+	// Summarization keeps the session busy, and the prompts queued behind
+	// it run outside any turn, so re-check the goal once it is done: a
+	// continuation dropped meanwhile has no one else to ask for it again.
+	defer c.goalRuntime.TryContinueGoal(sessionID)
 	agent := c.currentAgent()
 	providerCfg, ok := c.cfg.Config().Providers.Get(agent.Model().ModelCfg.Provider)
 	if !ok {

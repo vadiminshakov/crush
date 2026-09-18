@@ -257,12 +257,7 @@ func (w *AppWorkspace) GoalGet(ctx context.Context, sessionID string) (*goal.Goa
 }
 
 func (w *AppWorkspace) GoalSet(ctx context.Context, sessionID, objective string) (*goal.Goal, error) {
-	g, err := w.app.GoalService.Create(ctx, sessionID, objective)
-	if err != nil {
-		return nil, err
-	}
-	w.app.GoalRuntime.Kick(sessionID)
-	return g, nil
+	return w.app.GoalRuntime.Set(ctx, sessionID, objective)
 }
 
 func (w *AppWorkspace) GoalPause(ctx context.Context, sessionID string) (*goal.Goal, error) {
@@ -274,14 +269,11 @@ func (w *AppWorkspace) GoalPause(ctx context.Context, sessionID string) (*goal.G
 }
 
 func (w *AppWorkspace) GoalResume(ctx context.Context, sessionID string) (*goal.Goal, error) {
-	if w.AgentIsBusy() {
-		return nil, errors.New("agent is still stopping; wait before resuming the goal")
-	}
 	return w.app.GoalRuntime.Resume(ctx, sessionID)
 }
 
 func (w *AppWorkspace) GoalStart(ctx context.Context, sessionID string) error {
-	w.app.GoalRuntime.Kick(sessionID)
+	w.app.GoalRuntime.TryContinueGoal(sessionID)
 	return nil
 }
 
