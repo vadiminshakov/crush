@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/fantasy"
@@ -35,43 +36,53 @@ type Agent interface {
 // busy is dropped, and the turn keeping it busy asks again when it
 // finishes.
 //
-// Continuations run under a per-session context that every status change
-// the runtime makes cancels and replaces. A change thereby stops them,
-// including one whose goal read has not reached the agent yet.
+// The goal store is the source of truth: every continuation re-reads the
+// goal right before it starts, and status writes are compare-and-set, so
+// the runtime only has to serialize that read against status changes. A
+// continuation runs under its own context, which the status change that
+// stops the goal (Pause, Clear, Stop) cancels.
+//
+// A continuation turn that does no tool work suppresses the next
+// automatic continuation, so a goal the model only talks about does not
+// spin; a user turn, Set or Resume lifts the suppression.
 type Runtime struct {
 	goals  Service
 	agent  Agent
 	notify pubsub.Publisher[notify.Notification]
 
-	// root is cancelled by Stop, and every continuation context with it.
-	root context.Context
-	stop context.CancelFunc
+	// stopped is set by Stop and refuses continuations from then on.
+	stopped atomic.Bool
 
-	// statusMu serializes status changes, so that a status write and the
-	// continuation cancel following it are observed by others as one step.
-	statusMu sync.Mutex
-
-	// mu guards continuationCtx. It is never held across calls out.
-	mu sync.Mutex
-	// continuationCtx holds the context each session's continuations run
-	// under.
-	continuationCtx map[string]cancelableCtx
+	// mu serializes goal reads against status writes and the start of a
+	// continuation, so a continuation never starts for a goal that has
+	// just been paused, cleared or replaced. It is never held across calls
+	// into the agent.
+	mu       sync.Mutex
+	sessions map[string]*sessionState
 }
 
-type cancelableCtx struct {
+// sessionState is what the runtime remembers about a session it has
+// driven.
+type sessionState struct {
+	// running is the continuation the session is running, if any.
+	running *continuation
+	// suppressed is set when the last continuation did no tool work.
+	suppressed bool
+}
+
+// continuation is one continuation turn in flight.
+type continuation struct {
+	goalID string
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 func NewRuntime(goals Service, agent Agent, notify pubsub.Publisher[notify.Notification]) *Runtime {
-	root, stop := context.WithCancel(context.Background())
 	return &Runtime{
-		goals:           goals,
-		agent:           agent,
-		notify:          notify,
-		root:            root,
-		stop:            stop,
-		continuationCtx: make(map[string]cancelableCtx),
+		goals:    goals,
+		agent:    agent,
+		notify:   notify,
+		sessions: make(map[string]*sessionState),
 	}
 }
 
@@ -92,36 +103,64 @@ func (r *Runtime) TryContinueGoal(sessionID string) {
 // continueGoal starts at most one continuation turn for the session's
 // active goal. The next one is asked for when that turn finishes.
 func (r *Runtime) continueGoal(sessionID string) error {
-	// Take the context before reading the goal: a status change landing in
-	// between either cancels it or shows up in the read.
-	ctx := r.continuationContext(sessionID)
-	if ctx.Err() != nil {
-		return nil
-	}
-	g, err := r.goals.Get(context.Background(), sessionID)
-	if err != nil || g == nil || g.Status != GoalActive {
+	c, prompt, err := r.startContinuation(sessionID)
+	if err != nil || c == nil {
 		return err
 	}
-	prompt, err := renderContinuationPrompt(g)
-	if err != nil {
-		return err
-	}
-	slog.Info("Starting goal continuation turn", "session_id", sessionID, "goal_id", g.GoalID)
+	defer r.finishContinuation(sessionID, c)
+	slog.Info("Starting goal continuation turn", "session_id", sessionID, "goal_id", c.goalID)
 	if r.notify != nil {
 		r.notify.Publish(pubsub.CreatedEvent, notify.Notification{SessionID: sessionID, Type: notify.TypeGoalContinue})
 	}
-	_, err = r.agent.RunContinuation(WithContinuation(ctx, g.GoalID), sessionID, prompt)
-	if ctx.Err() != nil {
+	_, err = r.agent.RunContinuation(WithContinuation(c.ctx, c.goalID), sessionID, prompt)
+	if c.ctx.Err() != nil {
 		// A status change cancelled the turn, which is not a failure.
 		return nil
 	}
 	return err
 }
 
+// startContinuation reads the goal and, when it is active and nothing
+// holds the session back, registers a continuation for it. It returns a
+// nil continuation when there is nothing to start.
+func (r *Runtime) startContinuation(sessionID string) (*continuation, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped.Load() {
+		return nil, "", nil
+	}
+	s := r.session(sessionID)
+	if s.running != nil || s.suppressed {
+		return nil, "", nil
+	}
+	g, err := r.goals.Get(context.Background(), sessionID)
+	if err != nil || g == nil || g.Status != GoalActive {
+		return nil, "", err
+	}
+	prompt, err := renderContinuationPrompt(g)
+	if err != nil {
+		return nil, "", err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.running = &continuation{goalID: g.GoalID, ctx: ctx, cancel: cancel}
+	return s.running, prompt, nil
+}
+
+// finishContinuation releases the continuation once its turn returned.
+func (r *Runtime) finishContinuation(sessionID string, c *continuation) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c.cancel()
+	if s := r.sessions[sessionID]; s != nil && s.running == c {
+		s.running = nil
+	}
+}
+
 // TurnFinished applies the outcome of a finished turn, ordinary or
 // continuation alike, to the session's goal, given the turn's context and
 // what the agent returned for it:
-//   - an answered turn asks for the next continuation;
+//   - an answered turn asks for the next continuation, unless it was a
+//     continuation that did no tool work, which suppresses the next one;
 //   - a failed turn pauses the goal;
 //   - a cancelled turn leaves the goal's status to whoever cancelled it
 //     (Pause, Clear, Stop, or an agent cancel, which pauses first) and only
@@ -135,8 +174,14 @@ func (r *Runtime) TurnFinished(ctx context.Context, sessionID string, result *fa
 	if r == nil {
 		return
 	}
-	switch classifyTurn(ctx, result, err) {
-	case turnQueued:
+	outcome := classifyTurn(ctx, result, err)
+	if outcome == turnQueued {
+		return
+	}
+	_, isContinuation := ContinuationOf(ctx)
+	// A user turn lifts the suppression; an idle continuation sets it.
+	r.setSuppressed(sessionID, isContinuation && outcome == turnAnswered && !hasToolCalls(result))
+	switch outcome {
 	case turnFailed:
 		pauseCtx, cancel := context.WithTimeout(context.Background(), pauseTimeout)
 		defer cancel()
@@ -148,42 +193,30 @@ func (r *Runtime) TurnFinished(ctx context.Context, sessionID string, result *fa
 	}
 }
 
-// continuationContext returns the context the session's continuations run
-// under.
-func (r *Runtime) continuationContext(sessionID string) context.Context {
+func (r *Runtime) setSuppressed(sessionID string, suppressed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	c, ok := r.continuationCtx[sessionID]
+	r.session(sessionID).suppressed = suppressed
+	if suppressed {
+		slog.Info("Goal continuation did no tool work; waiting for the user", "session_id", sessionID)
+	}
+}
+
+// session returns the session's state, creating it on first use. Callers
+// must hold mu.
+func (r *Runtime) session(sessionID string) *sessionState {
+	s, ok := r.sessions[sessionID]
 	if !ok {
-		c = r.newContinuationCtx()
-		r.continuationCtx[sessionID] = c
+		s = &sessionState{}
+		r.sessions[sessionID] = s
 	}
-	return c.ctx
+	return s
 }
 
-// cancelContinuations cancels the session's continuations, running or about
-// to start, and gives later ones a fresh context.
-func (r *Runtime) cancelContinuations(sessionID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if c, ok := r.continuationCtx[sessionID]; ok {
-		c.cancel()
+// cancelRunning cancels the session's running continuation, if any.
+// Callers must hold mu.
+func (r *Runtime) cancelRunning(sessionID string) {
+	if s := r.sessions[sessionID]; s != nil && s.running != nil {
+		s.running.cancel()
 	}
-	r.continuationCtx[sessionID] = r.newContinuationCtx()
-}
-
-func (r *Runtime) newContinuationCtx() cancelableCtx {
-	ctx, cancel := context.WithCancel(r.root)
-	return cancelableCtx{ctx: ctx, cancel: cancel}
-}
-
-// sessionIDs returns every session the runtime has seen.
-func (r *Runtime) sessionIDs() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ids := make([]string, 0, len(r.continuationCtx))
-	for id := range r.continuationCtx {
-		ids = append(ids, id)
-	}
-	return ids
 }

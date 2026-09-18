@@ -55,3 +55,16 @@ func classifyTurn(ctx context.Context, result *fantasy.AgentResult, err error) t
 	}
 	return turnAnswered
 }
+
+// hasToolCalls reports whether the turn called any tool.
+func hasToolCalls(result *fantasy.AgentResult) bool {
+	if result == nil {
+		return false
+	}
+	if len(result.Response.Content.ToolCalls()) > 0 {
+		return true
+	}
+	return slices.ContainsFunc(result.Steps, func(step fantasy.StepResult) bool {
+		return len(step.Content.ToolCalls()) > 0
+	})
+}
