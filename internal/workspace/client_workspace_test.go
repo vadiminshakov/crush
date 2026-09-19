@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/client"
@@ -1079,4 +1080,13 @@ func TestClientWorkspace_GitBranchServerError(t *testing.T) {
 
 	_, err = ws.GitBranch(t.Context())
 	require.Error(t, err)
+}
+
+func TestRunCompletePlanPathFromProto(t *testing.T) {
+	t.Parallel()
+	w := &ClientWorkspace{}
+	got := w.translateEvent(pubsub.Event[proto.RunComplete]{Type: pubsub.UpdatedEvent, Payload: proto.RunComplete{SessionID: "s", MessageID: "m", PlanPath: ".crush/plans/план.md"}})
+	event, ok := got.(pubsub.Event[notify.RunComplete])
+	require.True(t, ok)
+	require.Equal(t, ".crush/plans/план.md", event.Payload.PlanPath)
 }
