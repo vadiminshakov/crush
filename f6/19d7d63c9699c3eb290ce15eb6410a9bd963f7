@@ -1,0 +1,69 @@
+internal/agent/notify/notify.go
+  s_d2be60bdd1ff78::t_11e7a2d2fd7ba3 46-47
+  s_d2be60bdd1ff78::t_a5d5883b2a381d 18-21
+internal/server/events_test.go
+  s_d2be60bdd1ff78::t_d0bfbabc54b4b4 128-137,139-147,149-152
+  s_51eee3f0e8a80f::t_4b8185e33f39dc 148
+  s_51eee3f0e8a80f::t_add9ce0b462fef 138
+internal/plan/filename_test.go
+  s_51eee3f0e8a80f::t_368d26b4f12243 59
+  s_51eee3f0e8a80f::t_4b810dc77f8ca9 60
+  s_51eee3f0e8a80f::t_43e237d0003a4d 1-58
+internal/agent/coordinator_readiness_test.go
+  s_d2be60bdd1ff78::t_063462be41d3ee 77
+internal/ui/common/common.go
+  s_d2be60bdd1ff78::t_be634977f5e464 14,24-25,27-28,30,32,35,37,40,42,45,47
+internal/ui/model/ui_test.go
+  s_51eee3f0e8a80f::t_1df6e459ebdac4 271
+  s_d2be60bdd1ff78::t_d0bfbabc54b4b4 262-270,272-282
+internal/agent/coordinator.go
+  s_d2be60bdd1ff78::t_2c22676828f333 154,222-228,240,256,422-427,762,781
+  s_d2be60bdd1ff78::t_50eb31736b48a4 144-153,155
+internal/ui/model/ui.go
+  s_d2be60bdd1ff78::t_2c22676828f333 5260-5263
+internal/agent/plan_persistence.go
+  s_d2be60bdd1ff78::t_a5d5883b2a381d 1-10,12-69,72-75,78-79,86,116-118
+  s_51eee3f0e8a80f::t_89f1c61ce644a8 76-77,80-85,87-115
+  s_51eee3f0e8a80f::t_79167b03457397 11
+  s_d2be60bdd1ff78::t_11e7a2d2fd7ba3 70-71
+internal/agent/coordinator_mcp_gate_test.go
+  s_d2be60bdd1ff78::t_063462be41d3ee 54
+internal/plan/filename.go
+  s_51eee3f0e8a80f::t_c8731c0508fb6e 1-83
+  s_51eee3f0e8a80f::t_4b810dc77f8ca9 84
+internal/agent/plan_persistence_test.go
+  s_d2be60bdd1ff78::t_1c467e4a6db3ec 1-6,8-27,29-32,34-46,79-90,94,98-100,104-179
+  s_51eee3f0e8a80f::t_45e895771c6c97 91-93,95-97,101-103
+  s_51eee3f0e8a80f::t_fa9330658ea514 7
+  s_51eee3f0e8a80f::t_b5c2cc49849a74 28,33,47-78
+internal/proto/agent.go
+  s_d2be60bdd1ff78::t_11e7a2d2fd7ba3 53
+internal/plan/markers.go
+  s_d2be60bdd1ff78::t_a475b8f3b792b1 1-76
+internal/agent/agent_tool.go
+  s_d2be60bdd1ff78::t_063462be41d3ee 36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f619d7d63c9699c3eb290ce15eb6410a9bd963f7",
+  "prompts": {},
+  "sessions": {
+    "s_51eee3f0e8a80f": {
+      "agent_id": {
+        "tool": "cline",
+        "id": "conv_1789813955830_nb3t6h8",
+        "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_d2be60bdd1ff78": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b91a-fdac-7410-847a-7ec94a0e363a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
