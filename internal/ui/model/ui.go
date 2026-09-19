@@ -5820,6 +5820,10 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 		m.turnOutcome = tea.ProgramStateError
 		// Terminal edge like TypeAgentFinished; fall through to the
 		// busy/queue refresh below.
+	case notify.TypePlanSaved:
+		return util.ReportInfo("Plan saved to " + n.Message)
+	case notify.TypePlanSaveError:
+		return util.ReportError(fmt.Errorf("failed to save plan: %s", n.Message))
 	case notify.TypeReAuthenticate:
 		return m.handleReAuthenticate(n.ProviderID)
 	case notify.TypeAWSSSOAuth:
