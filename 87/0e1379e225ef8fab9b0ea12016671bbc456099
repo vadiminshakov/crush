@@ -1,0 +1,108 @@
+internal/ui/styles/styles.go
+  s_98d0c9cee3734e::t_3554c5f818ec95 340-342
+internal/proto/proto.go
+  s_07283b24e216a4::t_103e7bc28027dd 78-80
+  s_98d0c9cee3734e::t_72491812d731a6 86
+internal/agent/notify/notify.go
+  s_98d0c9cee3734e::t_6b8c2bc2c50c2d 84
+  s_07283b24e216a4::t_103e7bc28027dd 75-78
+internal/agent/plan_persistence_test.go
+  s_07283b24e216a4::t_2d627ac91d952f 27,35,41,59,70,90,96
+  s_98d0c9cee3734e::t_42f4929886238e 170,174,178-180,182-183
+  s_07283b24e216a4::t_1919cca191b7a5 9
+internal/ui/model/chat.go
+  s_07283b24e216a4::t_1919cca191b7a5 4,16,21,1035,1038,1043,1048-1056,1072,1075-1085
+internal/server/events.go
+  s_98d0c9cee3734e::t_5daeb7f78e9027 146
+internal/workspace/client_workspace.go
+  s_98d0c9cee3734e::t_c3c2d2db9de2a5 1193
+internal/ui/model/plan_link_test.go
+  s_07283b24e216a4::t_9863e0e94154f4 1-22,24-91
+  s_07283b24e216a4::t_fe2192e4e24f91 23
+internal/ui/model/ui_test.go
+  s_98d0c9cee3734e::t_0edf58402c36f2 263-281,293-312
+  s_45f482f6b529d2::t_3489ed690533ed 282,284-288,290-291
+  s_45f482f6b529d2::t_c6524a8e51b316 289,292
+  s_07283b24e216a4::t_46b0f5ae43a8ff 792-803
+  s_07283b24e216a4::t_2e95fa08620abb 24,283
+internal/workspace/client_workspace_test.go
+  s_07283b24e216a4::t_46b0f5ae43a8ff 16,978-985
+  s_07283b24e216a4::t_9eed2528d0794e 986
+internal/ui/styles/quickstyle.go
+  s_98d0c9cee3734e::t_4c40b1e8bcf8ad 977-979
+internal/ui/chat/assistant.go
+  s_98d0c9cee3734e::t_cdf64594c775f7 556-558
+  s_15ed419ae87e71::t_4335bdded4d670 666-668,674,676
+  s_98d0c9cee3734e::t_de1b6a28b6fefb 198-203
+  s_45f482f6b529d2::t_f4ff0430a15262 585-594,597-598
+  s_07283b24e216a4::t_46b0f5ae43a8ff 8,209-212,430,444-452,599,606-609
+  s_15ed419ae87e71::t_c8f115627ce87d 16
+  s_07283b24e216a4::t_1919cca191b7a5 559,603-605,610-619,713-716,729
+  s_98d0c9cee3734e::t_6b67d304896c0e 698-704,708-712
+  s_45f482f6b529d2::t_0b8defa060c6e0 717,719-728,730-733
+  s_98d0c9cee3734e::t_f3fc4001d0765a 581-584,595-596,600-602
+  s_45f482f6b529d2::t_565a68b81c85a1 9-10
+  s_07283b24e216a4::t_8bf4c2c1272b0e 213,429,718
+  s_45f482f6b529d2::t_0e61cd05eb9f1d 204-208
+  s_07283b24e216a4::t_509a88850dc5c1 705-707
+internal/agent/plan_persistence.go
+  s_07283b24e216a4::t_2d627ac91d952f 44,67,86
+  s_98d0c9cee3734e::t_ba6f4442bf7371 28,33,37-40,42,54,56,64
+internal/ui/model/ui.go
+  s_98d0c9cee3734e::t_c5f829e8f55372 800-802
+  s_98d0c9cee3734e::t_2e546e14cc66de 5164,5166-5176,5182-5184
+  s_15ed419ae87e71::t_dd40c3c3f0584a 45
+  s_07283b24e216a4::t_1919cca191b7a5 1107-1109
+  s_07283b24e216a4::t_46b0f5ae43a8ff 1172
+  s_15ed419ae87e71::t_0bfcb535dabd78 5197
+  s_07283b24e216a4::t_782b36b1ce55fa 5165,5177-5181
+internal/server/events_test.go
+  s_07283b24e216a4::t_46b0f5ae43a8ff 106,125
+internal/ui/chat/assistant_plan_test.go
+  s_45f482f6b529d2::t_c9628941e50875 166,171-192,194-196,198-199,201-202
+  s_98d0c9cee3734e::t_5db2b04b4cd1fe 145-164,168-170,203-204,339
+  s_45f482f6b529d2::t_9cf6a70cb2c0e4 167
+  s_45f482f6b529d2::t_ff8072b9975e6a 197,200
+  s_07283b24e216a4::t_9863e0e94154f4 6,301-318,323-338
+  s_07283b24e216a4::t_71ce0ea7919396 13,165,193,319-322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "870e1379e225ef8fab9b0ea12016671bbc456099",
+  "prompts": {},
+  "sessions": {
+    "s_07283b24e216a4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b9d7-8bff-78d3-89b9-7a2a4d253508",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_15ed419ae87e71": {
+      "agent_id": {
+        "tool": "cline",
+        "id": "conv_1789817487044_mqz3s6c",
+        "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_45f482f6b529d2": {
+      "agent_id": {
+        "tool": "cline",
+        "id": "conv_1789820234800_q6t4ikw",
+        "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_98d0c9cee3734e": {
+      "agent_id": {
+        "tool": "cline",
+        "id": "conv_1789816286997_zrl8dy9",
+        "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
