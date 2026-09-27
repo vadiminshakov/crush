@@ -321,7 +321,7 @@ func (p *PlanHandoffInline) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	checkStyle := p.com.Styles.Editor.QuestionUnselected.
 		Foreground(p.com.Styles.Editor.QuestionCheckOff.GetForeground())
 	if p.NewSession {
-		checked = "[x]"
+		checked = "[✓]"
 		checkStyle = checkStyle.Foreground(p.com.Styles.Editor.QuestionCheckOn.GetForeground())
 	}
 	label := ansi.Truncate(

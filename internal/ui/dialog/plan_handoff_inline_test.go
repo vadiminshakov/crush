@@ -496,7 +496,7 @@ func TestPlanHandoffNewSessionToggle(t *testing.T) {
 			p.HandleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
 			require.True(t, p.NewSession, "feedback and focus changes preserve the choice")
 			p.Draw(scr, image.Rect(0, 0, width, p.Height(width)))
-			require.Contains(t, ansi.Strip(scr.Render()), "[x] New session")
+			require.Contains(t, ansi.Strip(scr.Render()), "[✓] New session")
 			for _, line := range strings.Split(ansi.Strip(scr.Render()), "\n") {
 				require.LessOrEqual(t, ansi.StringWidth(line), width)
 			}
