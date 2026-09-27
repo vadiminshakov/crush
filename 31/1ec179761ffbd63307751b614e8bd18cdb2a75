@@ -1,0 +1,19 @@
+internal/ui/dialog/plan_handoff_inline.go
+  s_73465710d4278b::t_5d29670eb75c48 321-322,325,327-330,335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "311ec179761ffbd63307751b614e8bd18cdb2a75",
+  "prompts": {},
+  "sessions": {
+    "s_73465710d4278b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e2a2-bb8d-78f0-a4ce-81a9077389cf",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    }
+  }
+}
