@@ -318,15 +318,21 @@ func (p *PlanHandoffInline) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	layout := p.choiceLayout(area.Dx())
 	y += drawStyledText(scr, image.Rect(area.Min.X+planHandoffIndent, y, area.Max.X, area.Max.Y), layout.question)
 	checked := "[ ]"
+	checkStyle := p.com.Styles.Editor.QuestionUnselected.
+		Foreground(p.com.Styles.Editor.QuestionCheckOff.GetForeground())
 	if p.NewSession {
 		checked = "[x]"
+		checkStyle = checkStyle.Foreground(p.com.Styles.Editor.QuestionCheckOn.GetForeground())
 	}
-	label := ansi.Truncate(checked+" New session (s)", max(0, area.Dx()-planHandoffIndent), "…")
+	label := ansi.Truncate(
+		checkStyle.Render(checked)+p.com.Styles.Editor.QuestionUnselected.Render(" New session (s)"),
+		max(0, area.Dx()-planHandoffIndent), "…",
+	)
 	p.sessionArea = image.Rectangle{
 		Min: image.Pt(area.Min.X+planHandoffIndent, y),
 		Max: image.Pt(area.Min.X+planHandoffIndent+ansi.StringWidth(label), y+1),
 	}.Intersect(area)
-	drawStyledText(scr, p.sessionArea, p.com.Styles.Editor.QuestionUnselected.Render(label))
+	drawStyledText(scr, p.sessionArea, label)
 	y++
 	y++ // blank
 
