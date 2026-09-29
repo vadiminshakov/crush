@@ -25,7 +25,6 @@ const (
 	LoadingIcon     string = "⟳"
 	ModelIcon       string = "◇"
 	HypercreditIcon string = "◆"
-	GitBranchIcon   string = ""
 
 	ArrowRightIcon string = "→"
 
