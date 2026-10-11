@@ -28,6 +28,7 @@ internal/ui/model/ui_test.go
 internal/workspace/client_workspace_test.go
   s_07283b24e216a4::t_46b0f5ae43a8ff 16,1033,1085-1091
   s_07283b24e216a4::t_9eed2528d0794e 1092
+  s_ebfe76c448c50f::t_d1a28f591d79ba 1084
 internal/ui/styles/quickstyle.go
   s_98d0c9cee3734e::t_4c40b1e8bcf8ad 1055-1057
 internal/ui/chat/assistant.go
@@ -101,6 +102,14 @@ internal/ui/chat/assistant_plan_test.go
         "tool": "cline",
         "id": "conv_1789816286997_zrl8dy9",
         "model": "unknown"
+      },
+      "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
+    },
+    "s_ebfe76c448c50f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a12a6d-557f-7f81-944a-5c0b9f40f9fc",
+        "model": "gpt-6.1-sol"
       },
       "human_author": "Vadim Inshakov <vadiminshakov@gmail.com>"
     }
